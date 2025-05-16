@@ -12,21 +12,21 @@ build_tree:
   k_adaptive: true            # Utiliser la méthode du coude pour déterminer k automatiquement
   k_min: 2                    # Nombre minimum de clusters pour k adaptatif
   k_max: 32                   # Nombre maximum de clusters pour k adaptatif
-  max_leaf_size: 50          # Taille maximale d'une feuille pour l'arrêt de la subdivision
-  max_data: 1000              # MAX_DATA: Nombre de vecteurs à stocker dans chaque feuille
+  max_leaf_size: 20          # Taille maximale d'une feuille pour l'arrêt de la subdivision
+  max_data: 400              # MAX_DATA: Nombre de vecteurs à stocker dans chaque feuille
   max_workers: 8              # Nombre maximum de processus parallèles (default: CPUs)
   use_gpu: true               # Utiliser le GPU pour K-means si disponible
 
 # Paramètres pour la recherche (test.py)
 search:
   k: 10                       # Nombre de voisins à rechercher
-  queries: 100                # Nombre de requêtes aléatoires pour les tests
-  mode: "mmap"                # Mode de chargement: "ram" ou "mmap"
+  queries: 1000                # Nombre de requêtes aléatoires pour les tests
+  mode: "ram"                # Mode de chargement: "ram" ou "mmap"
   cache_size_mb: 500          # Taille du cache en mégaoctets (pour le mode mmap)
   use_faiss: true             # Utiliser FAISS pour la recherche naïve et le filtrage final
 
   # Configuration de la recherche par faisceau
-  search_type: "single"          # Type de recherche: "single" (descente simple) ou "beam" (faisceau)
+  search_type: "beam"          # Type de recherche: "single" (descente simple) ou "beam" (faisceau)
   beam_width: 8                # Nombre de branches à explorer simultanément (si search_type="beam")
                                # Plus élevé = meilleur recall mais plus lent
                                # Valeur recommandée : 2-5

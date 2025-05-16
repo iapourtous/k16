@@ -28,7 +28,8 @@ from .tree import TreeNode
 
 def kmeans_faiss(vectors: np.ndarray, k: int, gpu: bool = False, niter: int = 25) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Exécute K-means avec FAISS, potentiellement sur GPU.
+    K-means sphérique optimisé pour les embeddings normalisés.
+    Utilise la similarité cosinus (produit scalaire) au lieu de la distance euclidienne.
 
     Args:
         vectors: Les vecteurs à clusteriser (shape: [n, d])
@@ -42,6 +43,12 @@ def kmeans_faiss(vectors: np.ndarray, k: int, gpu: bool = False, niter: int = 25
     # S'assurer que les vecteurs sont en float32
     vectors = vectors.astype(np.float32)
 
+    # Vérifier si les vecteurs sont normalisés
+    norms = np.linalg.norm(vectors, axis=1)
+    if not np.allclose(norms, 1.0, atol=1e-3):
+        # Normaliser si nécessaire
+        vectors = vectors / norms[:, np.newaxis]
+
     # Dimension des vecteurs
     d = vectors.shape[1]
     n = vectors.shape[0]
@@ -51,28 +58,28 @@ def kmeans_faiss(vectors: np.ndarray, k: int, gpu: bool = False, niter: int = 25
         k = n
 
     if FAISS_AVAILABLE:
-        # Utiliser FAISS (plus rapide)
-        # Initialiser les centroïdes aléatoirement
-        centroids = vectors[np.random.choice(n, k, replace=False)]
+        # Initialisation K-means++ pour une meilleure convergence
+        centroids = spherical_kmeans_plusplus(vectors, k)
 
-        # Créer un index pour la recherche rapide des plus proches voisins
+        # Créer un index pour la similarité cosinus (produit scalaire)
         gpu_available = gpu and hasattr(faiss, "get_num_gpus") and faiss.get_num_gpus() > 0
         if gpu_available:
             res = faiss.StandardGpuResources()
-            index = faiss.GpuIndexFlatL2(res, d)
+            index = faiss.GpuIndexFlatIP(res, d)  # IP = Inner Product
         else:
-            index = faiss.IndexFlatL2(d)
+            index = faiss.IndexFlatIP(d)  # Pour vecteurs normalisés = cosinus
 
-        # Algorithme K-means
+        # Algorithme K-means sphérique
         labels = np.zeros(n, dtype=np.int32)
+        prev_inertia = float('inf')
 
         for i in range(niter):
             # Ajouter les centroïdes à l'index
             index.reset()
             index.add(centroids)
 
-            # Assigner chaque point au centroïde le plus proche
-            _, idx = index.search(vectors, 1)
+            # Assigner chaque point au centroïde le plus proche (similarité maximale)
+            similarities, idx = index.search(vectors, 1)
             labels = idx.reshape(-1)
 
             # Recalculer les centroïdes
@@ -83,34 +90,111 @@ def kmeans_faiss(vectors: np.ndarray, k: int, gpu: bool = False, niter: int = 25
                 new_centroids[label] += vectors[j]
                 counts[label] += 1
 
-            # Gérer les clusters vides
-            mask = counts > 0
-            new_centroids[mask] /= counts[mask, np.newaxis]
-
-            # S'il y a des clusters vides, leur assigner un point au hasard
-            empty_clusters = np.where(counts == 0)[0]
-            if len(empty_clusters) > 0:
-                for empty_idx in empty_clusters:
+            # Gérer les clusters et normaliser
+            for cluster_idx in range(k):
+                if counts[cluster_idx] == 0:
+                    # Cluster vide : assigner un point aléatoire
                     random_idx = np.random.randint(0, n)
-                    new_centroids[empty_idx] = vectors[random_idx]
+                    new_centroids[cluster_idx] = vectors[random_idx]
+                else:
+                    # Normaliser le centroïde (projection sur la sphère unitaire)
+                    centroid = new_centroids[cluster_idx]
+                    new_centroids[cluster_idx] = centroid / np.linalg.norm(centroid)
+
+            # Calculer l'inertie pour vérifier la convergence
+            inertia = -similarities.sum()  # Négatif car on maximise la similarité
 
             # Vérifier la convergence
-            if np.allclose(centroids, new_centroids):
+            if abs(prev_inertia - inertia) < 1e-4 * abs(prev_inertia):
                 break
 
+            prev_inertia = inertia
             centroids = new_centroids
     else:
-        # Utiliser numpy (plus lent)
+        # Version fallback sans FAISS
         from sklearn.cluster import KMeans
+        from sklearn.preprocessing import normalize
+
+        # Normaliser les vecteurs
+        vectors_norm = normalize(vectors, norm='l2')
+
+        # K-means avec similarité cosinus
         kmeans = KMeans(n_clusters=k, max_iter=niter, n_init=1, random_state=42)
-        labels = kmeans.fit_predict(vectors)
-        centroids = kmeans.cluster_centers_
+        labels = kmeans.fit_predict(vectors_norm)
+
+        # Normaliser les centroïdes
+        centroids = normalize(kmeans.cluster_centers_, norm='l2')
 
     return centroids, labels
+
+
+def spherical_kmeans_plusplus(vectors: np.ndarray, k: int) -> np.ndarray:
+    """
+    Initialisation K-means++ adaptée pour le clustering sphérique.
+    Sélectionne intelligemment les centroïdes initiaux.
+
+    Args:
+        vectors: Vecteurs normalisés
+        k: Nombre de clusters
+
+    Returns:
+        np.ndarray: Centroïdes initiaux
+    """
+    n, d = vectors.shape
+    centroids = np.zeros((k, d), dtype=np.float32)
+
+    # Choisir le premier centroïde aléatoirement
+    centroids[0] = vectors[np.random.randint(0, n)]
+
+    # Si FAISS est disponible, l'utiliser pour accélérer
+    if FAISS_AVAILABLE:
+        index = faiss.IndexFlatIP(d)
+
+        for i in range(1, k):
+            # Calculer les distances au centroïde le plus proche
+            index.reset()
+            index.add(centroids[:i])
+            similarities, _ = index.search(vectors, 1)
+
+            # Convertir similarités en distances angulaires
+            similarities = np.clip(similarities.reshape(-1), -1, 1)
+            angular_distances = np.arccos(similarities)
+
+            # Probabilité proportionnelle au carré de la distance
+            probabilities = angular_distances ** 2
+            probabilities = probabilities / probabilities.sum()
+
+            # Sélectionner le prochain centroïde
+            cumulative_probs = np.cumsum(probabilities)
+            r = np.random.rand()
+            idx = np.searchsorted(cumulative_probs, r)
+            centroids[i] = vectors[idx]
+    else:
+        # Version sans FAISS
+        for i in range(1, k):
+            # Calculer les distances au centroïde le plus proche
+            min_distances = np.ones(n) * float('inf')
+            for j in range(i):
+                similarities = np.dot(vectors, centroids[j])
+                angular_distances = np.arccos(np.clip(similarities, -1, 1))
+                min_distances = np.minimum(min_distances, angular_distances)
+
+            # Probabilité proportionnelle au carré de la distance
+            probabilities = min_distances ** 2
+            probabilities = probabilities / probabilities.sum()
+
+            # Sélectionner le prochain centroïde
+            cumulative_probs = np.cumsum(probabilities)
+            r = np.random.rand()
+            idx = np.searchsorted(cumulative_probs, r)
+            centroids[i] = vectors[idx]
+
+    return centroids
 
 def find_optimal_k(vectors: np.ndarray, k_min: int = 2, k_max: int = 32, gpu: bool = False) -> int:
     """
     Trouve le nombre optimal de clusters k en utilisant la méthode du coude.
+    Adapté pour le k-means sphérique avec distance angulaire.
 
     Args:
         vectors: Les vecteurs à clusteriser
@@ -135,12 +219,16 @@ def find_optimal_k(vectors: np.ndarray, k_min: int = 2, k_max: int = 32, gpu: bo
     for k in tqdm(k_range, desc="Recherche du k optimal"):
         centroids, labels = kmeans_faiss(vectors, k, gpu=gpu, niter=15)  # Moins d'itérations pour la recherche
 
-        # Calculer l'inertie (somme des distances au carré)
+        # Calculer l'inertie adaptée au clustering sphérique
         inertia = 0
-        for i, label in enumerate(labels):
-            # Distance au carré entre le vecteur et son centroïde
-            diff = vectors[i] - centroids[label]
-            inertia += np.sum(diff * diff)
+        for i in range(k):
+            cluster_vectors = vectors[labels == i]
+            if len(cluster_vectors) > 0:
+                # Calculer les similarités avec le centroïde
+                similarities = np.dot(cluster_vectors, centroids[i])
+                # Convertir en distances angulaires et sommer
+                angular_distances = np.arccos(np.clip(similarities, -1, 1))
+                inertia += np.sum(angular_distances ** 2)
 
         inertias.append(inertia)
 
