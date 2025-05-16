@@ -18,7 +18,7 @@ class Searcher:
     """
 
     def __init__(self, tree: TreeNode, vectors_reader: VectorReader, use_faiss: bool = True,
-                 search_type: str = "single", beam_width: int = 3):
+                 search_type: str = "single", beam_width: int = 3, max_data: int = 4000):
         """
         Initialise le chercheur avec un arbre et un lecteur de vecteurs.
 
@@ -28,12 +28,14 @@ class Searcher:
             use_faiss: Utiliser FAISS pour accélérer la recherche
             search_type: Type de recherche - "single" ou "beam"
             beam_width: Nombre de branches à explorer en recherche par faisceau
+            max_data: Nombre de vecteurs à utiliser pour le remplissage dans beam_search_tree
         """
         self.tree = tree
         self.vectors_reader = vectors_reader
         self.use_faiss = use_faiss
         self.search_type = search_type
         self.beam_width = beam_width
+        self.max_data = max_data
         self.faiss_available = True
 
         # Vérifier si FAISS est disponible
@@ -181,8 +183,8 @@ class Searcher:
         # Phase 2: Stratégie de remplissage avec récursion
         all_candidates = set()
 
-        # Déterminer MAX_DATA (utiliser la valeur par défaut ou celle configurée)
-        max_data = getattr(self.tree, 'max_data', 3000)
+        # Utiliser MAX_DATA depuis la configuration
+        max_data = self.max_data
 
         # Première passe : répartition égale
         if leaves_data:

@@ -99,12 +99,14 @@ def main():
 
         # Initialisation du chercheur avec les paramètres de configuration
         search_config = config_manager.get_section("search")
+        build_config = config_manager.get_section("build_tree")
         searcher = Searcher(
             tree,
             vectors_reader,
             use_faiss=args.use_faiss,
             search_type=search_config.get("search_type", "single"),
-            beam_width=search_config.get("beam_width", 3)
+            beam_width=search_config.get("beam_width", 3),
+            max_data=build_config.get("max_data", 4000)
         )
         
         # Générer des requêtes aléatoires
