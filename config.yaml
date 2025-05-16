@@ -1,0 +1,46 @@
+# Configuration K16
+# Ce fichier centralise tous les paramètres pour les scripts build_tree.py, search.py et prepareData.py
+
+# Paramètres généraux
+general:
+  debug: false                # Activer le mode debug pour les logs supplémentaires
+
+# Paramètres pour la construction de l'arbre (build_tree.py)
+build_tree:
+  max_depth: 16               # Profondeur maximale de l'arbre
+  k: 16                       # Nombre de branches (clusters) par nœud
+  k_adaptive: true            # Utiliser la méthode du coude pour déterminer k automatiquement
+  k_min: 2                    # Nombre minimum de clusters pour k adaptatif
+  k_max: 32                   # Nombre maximum de clusters pour k adaptatif
+  max_leaf_size: 100          # Taille maximale d'une feuille pour l'arrêt de la subdivision
+  max_data: 3000              # MAX_DATA: Nombre de vecteurs à stocker dans chaque feuille
+  max_workers: 8              # Nombre maximum de processus parallèles (default: CPUs)
+  use_gpu: true               # Utiliser le GPU pour K-means si disponible
+
+# Paramètres pour la recherche (test.py)
+search:
+  k: 10                       # Nombre de voisins à rechercher
+  queries: 100                # Nombre de requêtes aléatoires pour les tests
+  mode: "ram"                # Mode de chargement: "ram" ou "mmap"
+  cache_size_mb: 500          # Taille du cache en mégaoctets (pour le mode mmap)
+  use_faiss: true             # Utiliser FAISS pour la recherche naïve et le filtrage final
+
+  # Configuration de la recherche par faisceau
+  search_type: "beam"          # Type de recherche: "single" (descente simple) ou "beam" (faisceau)
+  beam_width: 4                # Nombre de branches à explorer simultanément (si search_type="beam")
+                               # Plus élevé = meilleur recall mais plus lent
+                               # Valeur recommandée : 2-5
+
+# Paramètres pour la préparation des données (prepareData.py)
+prepare_data:
+  model: "intfloat/multilingual-e5-large"  # Modèle d'embedding à utiliser
+  batch_size: 128                          # Taille des lots pour l'encodage
+  normalize: true                          # Normaliser les embeddings
+
+# Paramètres pour les fichiers
+files:
+  vectors_dir: "/home/dess4ever/workspace/tool/K16/data"   # Répertoire des vecteurs
+  trees_dir: "/home/dess4ever/workspace/tool/K16/models"   # Répertoire des arbres
+  default_qa: "qa.txt"                                     # Fichier texte par défaut
+  default_vectors: "data.bin"                              # Fichier de vecteurs par défaut
+  default_tree: "tree.bsp"                                 # Fichier d'arbre par défaut

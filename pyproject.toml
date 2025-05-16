@@ -1,0 +1,92 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "k16-search"
+version = "0.1.0"
+description = "K16 - Système de recherche rapide basé sur un arbre de clustering hiérarchique"
+readme = "README.md"
+requires-python = ">=3.8"
+license = {text = "MIT"}
+authors = [
+    {name = "K16 Team", email = "contact@k16.ai"}
+]
+keywords = [
+    "search",
+    "embeddings",
+    "k-tree",
+    "information-retrieval",
+    "natural-language-processing"
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+dependencies = [
+    "numpy>=1.21.0",
+    "sentence-transformers>=2.2.0",
+    "datasets>=2.14.0",
+    "tqdm>=4.62.0",
+    "streamlit>=1.25.0",
+    "PyYAML>=6.0",
+    "scikit-learn>=1.0.0",
+    "faiss-cpu>=1.7.0",
+    "psutil>=5.9.0",
+]
+
+[project.optional-dependencies]
+gpu = [
+    "faiss-gpu>=1.7.0",  # Version GPU de FAISS (remplace faiss-cpu)
+    "torch>=2.0.0",
+    "torchvision>=0.15.0",
+    "torchaudio>=2.0.0",
+]
+
+dev = [
+    "pytest>=7.0.0",
+    "black>=23.0.0",
+    "flake8>=6.0.0",
+    "mypy>=1.0.0",
+    "isort>=5.12.0",
+]
+
+[project.scripts]
+k16-prepare = "src.prepareData:main"
+k16-build = "src.build_tree:main"
+k16-test = "src.test:main"
+k16-search = "src.streamlit_search:main"
+
+[project.urls]
+Homepage = "https://github.com/k16/k16-search"
+Documentation = "https://k16-search.readthedocs.io"
+Repository = "https://github.com/k16/k16-search"
+Issues = "https://github.com/k16/k16-search/issues"
+
+[tool.setuptools]
+packages = ["lib", "src"]
+
+[tool.setuptools.package-data]
+k16-search = ["config.yaml"]
+
+[tool.black]
+line-length = 120
+target-version = ['py38']
+
+[tool.isort]
+profile = "black"
+line_length = 120
+
+[tool.mypy]
+python_version = "3.8"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
