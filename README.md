@@ -2,23 +2,23 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/Python-3.8+-blue.svg" alt="Python">
-  <img src="https://img.shields.io/badge/Performance-14.46x_faster-green.svg" alt="Performance">
-  <img src="https://img.shields.io/badge/Recall-82.85%25-brightgreen.svg" alt="Recall">
+  <img src="https://img.shields.io/badge/Performance-48.30x_faster-green.svg" alt="Performance">
+  <img src="https://img.shields.io/badge/Recall-69.10%25_to_90.70%25-brightgreen.svg" alt="Recall">
   <img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License">
 </p>
 
 **K16 Search** est un système de recherche par similarité ultra-performant basé sur un arbre de clustering hiérarchique. Conçu pour rechercher efficacement dans des millions de vecteurs d'embeddings, K16 offre :
 
-- ⚡ **Accélération jusqu'à 14.46x** en mode simple
-- 🎯 **Recall jusqu'à 93.76%** en mode faisceau (beam search)
-- 🔄 **Deux modes de recherche** adaptés à vos besoins
+- ⚡ **Accélération jusqu'à 48.30x** en mode single
+- 🎯 **Recall ajustable** : 69.10% (single) à 90.70% (beam)
+- 🔄 **Deux modes de recherche** : rapide (single) ou précis (beam)
 
 🚀 **Alternative à HNSW** : Plus simple, plus léger et souvent plus rapide que les graphes HNSW (Hierarchical Navigable Small World), K16 offre un excellent compromis entre performance et simplicité d'implémentation.
 
 ## ✨ Points Forts
 
-- 🏎️ **Ultra-rapide** : Recherche en ~6ms (single) ou ~8ms (beam) sur 300k vecteurs
-- 🎯 **Haute précision** : Taux de rappel de 82.85% (single) à 93.76% (beam)
+- 🏎️ **Ultra-rapide** : Recherche en ~5.8ms (single) ou ~7.6ms (beam) sur 300k vecteurs
+- 🎯 **Haute précision** : Taux de rappel ajustable de 69.10% à 90.70%
 - 🔧 **Flexible** : Deux modes de recherche + Support RAM/mmap
 - 💻 **Interface moderne** : Application Streamlit intuitive pour la recherche interactive
 - ⚡ **Optimisé** : Utilise FAISS pour l'accélération GPU/CPU et le clustering parallèle
@@ -52,22 +52,26 @@ Sur le dataset Natural Questions (307k questions-réponses) :
 ### Recherche Simple (`single`)
 | Métrique | Valeur |
 |----------|--------|
-| Temps moyen (arbre) | 0.12 ms |
-| Temps moyen (filtrage) | 5.92 ms |
-| **Temps total** | **6.04 ms** |
-| Temps naïf | 87.33 ms |
-| **Accélération** | **14.46x** |
-| **Recall@10** | **82.85%** |
+| Candidats moyens | 1000 |
+| Temps moyen (arbre) | 0.13 ms |
+| Temps moyen (filtrage) | 5.71 ms |
+| **Temps total** | **5.84 ms** |
+| Temps naïf | 282.02 ms |
+| **Accélération** | **48.30x** |
+| **Recall@10** | **69.10%** |
 
-### Recherche par Faisceau (`beam`, width=5)
+### Recherche par Faisceau (`beam`, width=8)
 | Métrique | Valeur |
 |----------|--------|
-| **Temps total** | **~8.1 ms** |
-| Temps naïf | 87.33 ms |
-| **Accélération** | **10.76x** |
-| **Recall@10** | **93.76%** |
+| Candidats moyens | 1000 |
+| Temps moyen (arbre) | 1.06 ms |
+| Temps moyen (filtrage) | 6.57 ms |
+| **Temps total** | **7.63 ms** |
+| Temps naïf | 298.90 ms |
+| **Accélération** | **39.15x** |
+| **Recall@10** | **90.70%** |
 
-💡 **La recherche par faisceau offre un gain de +10.91% en recall pour seulement ~2ms de plus !**
+💡 **Choisissez votre mode selon vos besoins : vitesse maximale (single) ou précision optimale (beam) !**
 
 ## 🎯 Cas d'Usage
 
@@ -143,9 +147,9 @@ Le fichier `config.yaml` centralise tous les paramètres du système. Voici une 
 
 ```yaml
 build_tree:
-  max_depth: 16               # Profondeur maximale de l'arbre
+  max_depth: 32              # Profondeur maximale de l'arbre
                              # Plus profond = plus de précision mais construction plus lente
-                             # Valeur recommandée : 12-20
+                             # Valeur recommandée : 12-32
 
   k: 16                      # Nombre de branches par nœud (si k_adaptive=false)
                              # Plus élevé = arbre plus large mais moins profond
@@ -157,11 +161,11 @@ build_tree:
   k_min: 2                   # Nombre minimum de clusters pour k adaptatif
   k_max: 32                  # Nombre maximum de clusters pour k adaptatif
 
-  max_leaf_size: 100         # Taille maximale d'une feuille avant subdivision
+  max_leaf_size: 50          # Taille maximale d'une feuille avant subdivision
                              # Plus petit = arbre plus profond, recherche plus précise
                              # Valeur recommandée : 50-200
 
-  max_data: 3000             # Nombre de vecteurs pré-calculés par feuille
+  max_data: 1000             # Nombre de vecteurs pré-calculés par feuille
                              # Plus élevé = meilleur recall mais plus de mémoire
                              # Valeur recommandée : 1000-5000
 
@@ -194,13 +198,13 @@ search:
                              # Fortement recommandé pour les performances
 
   # Configuration de la recherche par faisceau
-  search_type: "beam"        # Type de recherche:
+  search_type: "single"      # Type de recherche:
                              # - "single" : descente simple (plus rapide)
                              # - "beam" : recherche par faisceau (meilleur recall)
 
-  beam_width: 3              # Nombre de branches à explorer simultanément
+  beam_width: 8              # Nombre de branches à explorer simultanément
                              # Plus élevé = meilleur recall mais plus lent
-                             # Valeur recommandée : 2-5
+                             # Valeur recommandée : 2-8
                              # Ignoré si search_type="single"
 ```
 
