@@ -2,34 +2,35 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/Python-3.8+-blue.svg" alt="Python">
-  <img src="https://img.shields.io/badge/Performance-48.30x_faster-green.svg" alt="Performance">
-  <img src="https://img.shields.io/badge/Recall-69.10%25_to_90.70%25-brightgreen.svg" alt="Recall">
+  <img src="https://img.shields.io/badge/Performance-61.28x_faster-green.svg" alt="Performance">
+  <img src="https://img.shields.io/badge/Recall-83.10%25-brightgreen.svg" alt="Recall">
   <img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License">
 </p>
 
 **K16 Search** est un système de recherche par similarité ultra-performant basé sur un arbre de clustering hiérarchique. Conçu pour rechercher efficacement dans des millions de vecteurs d'embeddings, K16 offre :
 
-- ⚡ **Accélération jusqu'à 48.30x** en mode single
-- 🎯 **Recall ajustable** : 69.10% (single) à 90.70% (beam)
-- 🔄 **Deux modes de recherche** : rapide (single) ou précis (beam)
+- ⚡ **Accélération de 61.28x** avec paramètres optimaux
+- 🎯 **Recall de 83.10%** en seulement 1.23ms
+- 🔧 **Outils d'optimisation** pour trouver vos paramètres parfaits
 
 🚀 **Alternative à HNSW** : Plus simple, plus léger et souvent plus rapide que les graphes HNSW (Hierarchical Navigable Small World), K16 offre un excellent compromis entre performance et simplicité d'implémentation.
 
 ## ✨ Points Forts
 
-- 🏎️ **Ultra-rapide** : Recherche en ~5.8ms (single) ou ~7.6ms (beam) sur 300k vecteurs
-- 🎯 **Haute précision** : Taux de rappel ajustable de 69.10% à 90.70%
+- 🏎️ **Ultra-rapide** : Recherche en seulement 1.23ms sur 88k vecteurs
+- 🎯 **Haute précision** : Taux de rappel de 83.10% avec configuration optimale
 - 🔧 **Flexible** : Deux modes de recherche + Support RAM/mmap
 - 💻 **Interface moderne** : Application Streamlit intuitive pour la recherche interactive
 - ⚡ **Optimisé** : Utilise FAISS pour l'accélération GPU/CPU et le clustering parallèle
 
 ## 🔬 Comment ça marche ?
 
-K16 utilise un **arbre k-aire adaptatif** pour partitionner hiérarchiquement l'espace des embeddings :
+K16 utilise un **arbre k-aire adaptatif** avec **k-means sphérique** pour partitionner hiérarchiquement l'espace des embeddings :
 
-1. **Construction de l'arbre** : Les vecteurs sont organisés en clusters hiérarchiques
-2. **Recherche efficace** : Descente rapide dans l'arbre vers les feuilles pertinentes
-3. **Filtrage final** : Les candidats sont raffinés avec FAISS pour obtenir les k plus proches
+1. **K-means sphérique** : Clustering adapté aux embeddings normalisés (similarité cosinus)
+2. **Construction de l'arbre** : Les vecteurs sont organisés en clusters hiérarchiques cohérents
+3. **Recherche efficace** : Descente rapide dans l'arbre vers les feuilles pertinentes
+4. **Filtrage final** : Les candidats sont raffinés avec FAISS pour obtenir les k plus proches
 
 ### Architecture
 
@@ -47,31 +48,32 @@ K16 utilise un **arbre k-aire adaptatif** pour partitionner hiérarchiquement l'
 
 ## 📊 Performances
 
-Sur le dataset Natural Questions (307k questions-réponses) :
+Sur le dataset Natural Questions (88k questions-réponses) :
 
-### Recherche Simple (`single`)
+### Configuration Optimale (`beam`, width=8)
 | Métrique | Valeur |
 |----------|--------|
-| Candidats moyens | 1000 |
-| Temps moyen (arbre) | 0.13 ms |
-| Temps moyen (filtrage) | 5.71 ms |
-| **Temps total** | **5.84 ms** |
-| Temps naïf | 282.02 ms |
-| **Accélération** | **48.30x** |
-| **Recall@10** | **69.10%** |
+| Candidats moyens | 400 |
+| Temps moyen (arbre) | 0.79 ms |
+| Temps moyen (filtrage) | 0.44 ms |
+| **Temps total** | **1.23 ms** |
+| Temps naïf | 75.62 ms |
+| **Accélération** | **61.28x** |
+| **Recall@10** | **83.10%** |
 
-### Recherche par Faisceau (`beam`, width=8)
-| Métrique | Valeur |
-|----------|--------|
-| Candidats moyens | 1000 |
-| Temps moyen (arbre) | 1.06 ms |
-| Temps moyen (filtrage) | 6.57 ms |
-| **Temps total** | **7.63 ms** |
-| Temps naïf | 298.90 ms |
-| **Accélération** | **39.15x** |
-| **Recall@10** | **90.70%** |
+### Paramètres Optimaux
+```yaml
+build_tree:
+  max_depth: 32
+  max_leaf_size: 20
+  max_data: 400
 
-💡 **Choisissez votre mode selon vos besoins : vitesse maximale (single) ou précision optimale (beam) !**
+search:
+  search_type: "beam"
+  beam_width: 8
+```
+
+💡 **Ces performances exceptionnelles sont obtenues grâce à une optimisation fine des paramètres !**
 
 ## 🎯 Cas d'Usage
 
@@ -266,61 +268,106 @@ search:
   cache_size_mb: 1000
 ```
 
-**Configuration pour Meilleur Recall** :
+**Configuration pour Recall >90%** :
 ```yaml
 build_tree:
-  max_depth: 18
+  max_depth: 32
   k_adaptive: true
-  max_leaf_size: 80
-  max_data: 10000  # Très élevé pour excellent recall
+  max_leaf_size: 15   # Feuilles plus petites = meilleure pureté
+  max_data: 1000      # Nécessaire pour dépasser 90% de recall
 
 search:
   mode: "ram"
   use_faiss: true
   search_type: "beam"
-  beam_width: 5  # Atteint 93.76% de recall !
+  beam_width: 24      # Exploration plus large = meilleur recall
 ```
 
 ### Optimisation des Paramètres
 
+K16 inclut des outils puissants pour trouver automatiquement les paramètres optimaux pour votre dataset :
+
+#### 🔬 Outil d'Optimisation Automatique
+
+```bash
+# Teste automatiquement différentes combinaisons de paramètres
+python src/optimize_params.py
+```
+
+Cet outil :
+- Teste systématiquement différentes valeurs de `max_depth`, `max_leaf_size`, `max_data`
+- Évalue chaque configuration avec plusieurs `beam_width`
+- Sauvegarde les résultats dans `optimization_results.json`
+- Identifie automatiquement :
+  - La configuration la plus rapide
+  - La configuration avec le meilleur recall
+  - Le meilleur compromis vitesse/recall
+
+#### 📊 Visualisation des Résultats
+
+```bash
+# Interface interactive pour analyser les résultats d'optimisation
+streamlit run src/visualize_optimization.py
+```
+
+Cette interface Streamlit permet de :
+- Visualiser les compromis vitesse/recall
+- Filtrer par paramètres spécifiques
+- Analyser l'impact de chaque paramètre
+- Exporter les configurations optimales
+- Générer des graphiques comparatifs
+
+#### Stratégies d'Optimisation
+
 1. **Pour augmenter le recall** :
-   - Utiliser `search_type: "beam"` avec `beam_width: 3-5`
-   - Augmenter `max_data`
-   - Diminuer `max_leaf_size`
-   - Augmenter `max_depth`
+   - Utiliser `search_type: "beam"` avec `beam_width: 10-20`
+   - Augmenter `max_data` (400-800)
+   - Diminuer `max_leaf_size` (15-25)
+   - Augmenter `max_depth` (28-32)
 
 2. **Pour accélérer la recherche** :
    - Utiliser `search_type: "single"`
-   - Diminuer `max_data`
-   - Augmenter `max_leaf_size`
+   - Diminuer `max_data` (200-400)
+   - Augmenter `max_leaf_size` (50-100)
    - Utiliser `mode: "ram"`
 
 3. **Pour économiser la mémoire** :
    - Utiliser `mode: "mmap"`
-   - Diminuer `max_data`
+   - Diminuer `max_data` (100-300)
    - Réduire `cache_size_mb`
 
-4. **Pour équilibrer performance/qualité** :
-   - Utiliser `search_type: "beam"` avec `beam_width: 2`
-   - Activer `k_adaptive: true`
-   - Ajuster `max_data` entre 2000-4000
-   - Maintenir `max_depth` entre 14-18
+4. **Pour le meilleur compromis** :
+   - Utiliser `search_type: "beam"` avec `beam_width: 6-10`
+   - `max_data: 300-500`
+   - `max_leaf_size: 20-40`
+   - `max_depth: 24-32`
 
-#### Choix du Type de Recherche
+#### Configurations pour Atteindre >90% de Recall
 
-**Recherche Simple (`single`)** :
-- ✅ Idéal pour des applications temps réel
-- ✅ Latence minimale (~6ms)
-- 📊 Recall : ~82.85%
-- ⚡ Accélération : 14.46x
-- Usage : Chatbots, suggestions en temps réel
+K16 peut facilement atteindre plus de 90% de recall avec les bons paramètres :
 
-**Recherche par Faisceau (`beam`)** :
-- ✅ Excellent recall (93.76% avec width=5)
-- ✅ Exploration plus complète
-- ⏱️ Latence acceptable (~8ms)
-- ⚡ Accélération : 10.76x
-- Usage : Recherche documentaire, analyses critiques
+**Configuration Haute Précision (>90% recall)** :
+```yaml
+build_tree:
+  max_depth: 32
+  max_leaf_size: 15-20
+  max_data: 1000      # Minimum requis pour >90% recall
+
+search:
+  search_type: "beam"
+  beam_width: 18-24
+```
+
+**Résultats attendus** :
+- Recall : 90-95%
+- Temps : 3-5ms
+- Accélération : 40-60x
+
+**Facteurs clés pour augmenter le recall** :
+- `max_data` plus élevé = plus de candidats à filtrer
+- `beam_width` plus large = exploration plus complète
+- `max_leaf_size` plus petit = feuilles plus pures
+- `max_depth` plus élevé = partitionnement plus fin
 
 ## 📁 Structure du Projet
 
