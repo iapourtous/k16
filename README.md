@@ -7,15 +7,19 @@
   <img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License">
 </p>
 
-**K16 Search** est un système de recherche par similarité ultra-performant basé sur un arbre de clustering hiérarchique. Conçu pour rechercher efficacement dans des millions de vecteurs d'embeddings, K16 offre une accélération **14x** par rapport aux méthodes naïves tout en maintenant un taux de rappel de **82.85%**.
+**K16 Search** est un système de recherche par similarité ultra-performant basé sur un arbre de clustering hiérarchique. Conçu pour rechercher efficacement dans des millions de vecteurs d'embeddings, K16 offre :
+
+- ⚡ **Accélération jusqu'à 14.46x** en mode simple
+- 🎯 **Recall jusqu'à 93.76%** en mode faisceau (beam search)
+- 🔄 **Deux modes de recherche** adaptés à vos besoins
 
 🚀 **Alternative à HNSW** : Plus simple, plus léger et souvent plus rapide que les graphes HNSW (Hierarchical Navigable Small World), K16 offre un excellent compromis entre performance et simplicité d'implémentation.
 
 ## ✨ Points Forts
 
-- 🏎️ **Ultra-rapide** : Recherche en ~6ms sur 300k vecteurs (vs 87ms en recherche naïve)
-- 🎯 **Haute précision** : Taux de rappel de 82.85% avec configuration optimale
-- 🔧 **Flexible** : Support RAM et mmap pour s'adapter à vos contraintes mémoire
+- 🏎️ **Ultra-rapide** : Recherche en ~6ms (single) ou ~8ms (beam) sur 300k vecteurs
+- 🎯 **Haute précision** : Taux de rappel de 82.85% (single) à 93.76% (beam)
+- 🔧 **Flexible** : Deux modes de recherche + Support RAM/mmap
 - 💻 **Interface moderne** : Application Streamlit intuitive pour la recherche interactive
 - ⚡ **Optimisé** : Utilise FAISS pour l'accélération GPU/CPU et le clustering parallèle
 
@@ -45,6 +49,7 @@ K16 utilise un **arbre k-aire adaptatif** pour partitionner hiérarchiquement l'
 
 Sur le dataset Natural Questions (307k questions-réponses) :
 
+### Recherche Simple (`single`)
 | Métrique | Valeur |
 |----------|--------|
 | Temps moyen (arbre) | 0.12 ms |
@@ -52,7 +57,17 @@ Sur le dataset Natural Questions (307k questions-réponses) :
 | **Temps total** | **6.04 ms** |
 | Temps naïf | 87.33 ms |
 | **Accélération** | **14.46x** |
-| **Recall@100** | **82.85%** |
+| **Recall@10** | **82.85%** |
+
+### Recherche par Faisceau (`beam`, width=5)
+| Métrique | Valeur |
+|----------|--------|
+| **Temps total** | **~8.1 ms** |
+| Temps naïf | 87.33 ms |
+| **Accélération** | **10.76x** |
+| **Recall@10** | **93.76%** |
+
+💡 **La recherche par faisceau offre un gain de +10.91% en recall pour seulement ~2ms de plus !**
 
 ## 🎯 Cas d'Usage
 
@@ -258,6 +273,8 @@ build_tree:
 search:
   mode: "ram"
   use_faiss: true
+  search_type: "beam"
+  beam_width: 5  # Atteint 93.76% de recall !
 ```
 
 ### Optimisation des Paramètres
@@ -290,14 +307,16 @@ search:
 **Recherche Simple (`single`)** :
 - ✅ Idéal pour des applications temps réel
 - ✅ Latence minimale (~6ms)
-- ❌ Recall plus faible (~82%)
+- 📊 Recall : ~82.85%
+- ⚡ Accélération : 14.46x
 - Usage : Chatbots, suggestions en temps réel
 
 **Recherche par Faisceau (`beam`)** :
-- ✅ Meilleur recall (~90%+)
+- ✅ Excellent recall (93.76% avec width=5)
 - ✅ Exploration plus complète
-- ❌ Plus lent (×beam_width)
-- Usage : Recherche documentaire, analyses offline
+- ⏱️ Latence acceptable (~8ms)
+- ⚡ Accélération : 10.76x
+- Usage : Recherche documentaire, analyses critiques
 
 ## 📁 Structure du Projet
 
@@ -443,13 +462,17 @@ return all_candidates
 
 **Comparaison Single vs Beam** :
 
-| Aspect | Single | Beam |
-|--------|--------|------|
-| Branches explorées | 1 | w (beam_width) |
-| Candidats retournés | MAX_DATA | ≤ w × (MAX_DATA/w) |
-| Complexité temporelle | O(k×d×h) | O(w×k×d×h) |
-| Recall attendu | ~80% | ~90%+ |
+| Aspect | Single | Beam (width=5) |
+|--------|--------|----------------|
+| Branches explorées | 1 | 5 |
+| Candidats retournés | MAX_DATA | MAX_DATA (garanti) |
+| Complexité temporelle | O(k×d×h) | O(5×k×d×h) |
+| **Recall réel** | **82.85%** | **93.76%** |
+| **Temps réel** | **6.04ms** | **8.1ms** |
+| **Accélération** | **14.46x** | **10.76x** |
 | Cas d'usage | Rapidité prioritaire | Précision prioritaire |
+
+🎯 **Recommandation** : Avec seulement +2ms de latence, la recherche par faisceau offre un gain de recall exceptionnel (+10.91%) !
 
 #### 2. Filtrage Final avec FAISS
 
