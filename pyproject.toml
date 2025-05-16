@@ -66,10 +66,10 @@ k16-test = "src.test:main"
 k16-search = "src.streamlit_search:main"
 
 [project.urls]
-Homepage = "https://github.com/k16/k16-search"
-Documentation = "https://k16-search.readthedocs.io"
-Repository = "https://github.com/k16/k16-search"
-Issues = "https://github.com/k16/k16-search/issues"
+Homepage = "https://github.com/iapourtous/k16"
+Documentation = "https://github.com/iapourtous/k16"
+Repository = "https://github.com/iapourtous/k16.git"
+Issues = ""
 
 [tool.setuptools]
 packages = ["lib", "src"]

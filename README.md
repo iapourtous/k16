@@ -72,8 +72,8 @@ Sur le dataset Natural Questions (307k questions-réponses) :
 ### Installation en une commande
 
 ```bash
-git clone https://github.com/yourusername/k16-search.git
-cd k16-search
+git clone https://github.com/iapourtous/k16.git
+cd k16
 bash install.sh
 ```
 
