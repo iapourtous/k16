@@ -136,6 +136,7 @@ class Searcher:
     def beam_search_tree(self, query: np.ndarray, k: int = 10) -> List[int]:
         """
         Recherche par faisceau : explore plusieurs branches prometteuses simultanément.
+        Utilise une stratégie de remplissage pour garantir MAX_DATA candidats.
 
         Args:
             query: Vecteur de requête
@@ -146,19 +147,17 @@ class Searcher:
         """
         # Commencer avec la racine
         beam = [(self.tree, 1.0)]  # (node, score)
-        all_candidates = set()
+        leaves_data = []  # [(node, score, current_index)]
 
+        # Phase 1: Descendre l'arbre et collecter toutes les feuilles
         while beam and not all(node.is_leaf() for node, _ in beam):
             next_beam = []
 
             for node, score in beam:
                 if node.is_leaf():
-                    # Si c'est une feuille, ajouter ses candidats
+                    # Stocker les feuilles avec leurs scores
                     if node.indices:
-                        # Prendre une portion des indices selon la largeur du faisceau
-                        n_candidates = max(1, len(node.indices) // self.beam_width)
-                        candidates = node.indices[:n_candidates]
-                        all_candidates.update(candidates)
+                        leaves_data.append((node, score, 0))  # index 0 pour commencer
                 else:
                     # Explorer les k meilleures branches
                     centroids = np.array([child.centroid for child in node.children])
@@ -166,7 +165,6 @@ class Searcher:
 
                     for idx in top_k_indices:
                         child = node.children[idx]
-                        # Score basé sur la similarité avec le centroïde
                         child_score = np.dot(child.centroid, query)
                         next_beam.append((child, child_score))
 
@@ -175,16 +173,82 @@ class Searcher:
                 next_beam.sort(key=lambda x: x[1], reverse=True)
                 beam = next_beam[:self.beam_width]
 
-        # Traiter les feuilles restantes dans le faisceau
-        for node, _ in beam:
+        # Ajouter les feuilles finales
+        for node, score in beam:
             if node.is_leaf() and node.indices:
-                n_candidates = max(1, len(node.indices) // self.beam_width)
-                candidates = node.indices[:n_candidates]
-                all_candidates.update(candidates)
+                leaves_data.append((node, score, 0))
 
-        # Retourner tous les candidats uniques
+        # Phase 2: Stratégie de remplissage avec récursion
+        all_candidates = set()
+
+        # Déterminer MAX_DATA (utiliser la valeur par défaut ou celle configurée)
+        max_data = getattr(self.tree, 'max_data', 3000)
+
+        # Première passe : répartition égale
+        if leaves_data:
+            base_per_leaf = max(1, max_data // len(leaves_data))
+
+            for i, (leaf, score, _) in enumerate(leaves_data):
+                n_to_take = min(base_per_leaf, len(leaf.indices))
+                candidates = leaf.indices[:n_to_take]
+                all_candidates.update(candidates)
+                # Mettre à jour l'index courant pour cette feuille
+                leaves_data[i] = (leaf, score, n_to_take)
+
+        # Deuxième passe : remplissage récursif jusqu'à MAX_DATA
+        self._fill_candidates_recursive(all_candidates, leaves_data, max_data)
+
         return list(all_candidates)
-    
+
+    def _fill_candidates_recursive(self, candidates: set, leaves_data: list, max_data: int) -> None:
+        """
+        Remplit récursivement les candidats jusqu'à atteindre max_data.
+
+        Args:
+            candidates: Ensemble des candidats actuels
+            leaves_data: Liste des (node, score, current_index) pour chaque feuille
+            max_data: Nombre cible de candidats
+        """
+        # Condition d'arrêt : on a assez de candidats
+        if len(candidates) >= max_data:
+            return
+
+        # Condition d'arrêt : plus de candidats disponibles
+        all_exhausted = True
+        for leaf, _, idx in leaves_data:
+            if idx < len(leaf.indices):
+                all_exhausted = False
+                break
+
+        if all_exhausted:
+            return
+
+        # Trier les feuilles par score décroissant
+        leaves_data.sort(key=lambda x: x[1], reverse=True)
+
+        # Essayer d'ajouter un candidat de chaque feuille (round-robin par score)
+        candidates_added = False
+
+        for i, (leaf, score, current_idx) in enumerate(leaves_data):
+            if len(candidates) >= max_data:
+                break
+
+            if current_idx < len(leaf.indices):
+                # Essayer d'ajouter le prochain candidat non-dupliqué
+                while current_idx < len(leaf.indices):
+                    candidate = leaf.indices[current_idx]
+                    if candidate not in candidates:
+                        candidates.add(candidate)
+                        candidates_added = True
+                        leaves_data[i] = (leaf, score, current_idx + 1)
+                        break
+                    current_idx += 1
+                    leaves_data[i] = (leaf, score, current_idx)
+
+        # Appel récursif si on a ajouté des candidats et qu'on n'a pas atteint max_data
+        if candidates_added and len(candidates) < max_data:
+            self._fill_candidates_recursive(candidates, leaves_data, max_data)
+
     def filter_candidates(self, candidates: List[int], query: np.ndarray, k: int) -> List[int]:
         """
         Filtre les candidats pour ne garder que les k plus proches.
