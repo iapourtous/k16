@@ -67,6 +67,10 @@ def main():
                         help=f"Utiliser FAISS pour la recherche (par défaut: {search_config.get('use_faiss', True)})")
     parser.add_argument("--no-faiss", action="store_false", dest="use_faiss",
                         help="Ne pas utiliser FAISS pour la recherche")
+    parser.add_argument("--use-numba", action="store_true", default=True,
+                        help="Utiliser les optimisations Numba (par défaut: True)")
+    parser.add_argument("--no-numba", action="store_false", dest="use_numba",
+                        help="Ne pas utiliser les optimisations Numba")
     
     args = parser.parse_args()
     
@@ -106,7 +110,8 @@ def main():
             use_faiss=args.use_faiss,
             search_type=search_config.get("search_type", "single"),
             beam_width=search_config.get("beam_width", 3),
-            max_data=build_config.get("max_data", 4000)
+            max_data=build_config.get("max_data", 4000),
+            use_numba=args.use_numba
         )
         
         # Générer des requêtes aléatoires

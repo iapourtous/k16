@@ -390,28 +390,31 @@ k16-search/
 
 ### Construction de l'Arbre : Analyse Mathématique
 
-#### 1. Partitionnement Hiérarchique par K-Means
+#### 1. Partitionnement Hiérarchique par K-Means Sphérique
 
-L'algorithme construit récursivement un arbre k-aire en résolvant à chaque nœud le problème d'optimisation K-means :
+L'algorithme construit récursivement un arbre k-aire en résolvant à chaque nœud le problème d'optimisation K-means sphérique spécialisé pour embeddings normalisés :
 
 ```
-min   ∑ᵢ₌₁ⁿ ∑ⱼ₌₁ᵏ rᵢⱼ ‖xᵢ - cⱼ‖²
+max   ∑ᵢ₌₁ⁿ ∑ⱼ₌₁ᵏ rᵢⱼ ⟨xᵢ, cⱼ⟩
 c,r
 
 s.t.  ∑ⱼ₌₁ᵏ rᵢⱼ = 1  ∀i
       rᵢⱼ ∈ {0,1}    ∀i,j
+      ‖cⱼ‖₂ = 1      ∀j
+      ‖xᵢ‖₂ = 1      ∀i
 ```
 
 où :
 - **xᵢ** : vecteurs d'embeddings normalisés (‖xᵢ‖₂ = 1)
-- **cⱼ** : centroïdes des k clusters
+- **cⱼ** : centroïdes normalisés des k clusters (‖cⱼ‖₂ = 1)
 - **rᵢⱼ** : matrice d'assignation binaire
+- **⟨xᵢ, cⱼ⟩** : produit scalaire (équivalent à la similarité cosinus quand vecteurs normalisés)
 
-**Optimisation Lloyd-Forgy** :
-1. Initialisation K-means++ pour éviter les minima locaux
+**Optimisation K-means Sphérique** :
+1. Initialisation K-means++ adaptée pour la similarité cosinus
 2. Itération jusqu'à convergence :
-   - Assignation : rᵢⱼ = 1 si j = argmin_l ‖xᵢ - cₗ‖²
-   - Mise à jour : cⱼ = (∑ᵢ rᵢⱼxᵢ)/(∑ᵢ rᵢⱼ)
+   - Assignation : rᵢⱼ = 1 si j = argmax_l ⟨xᵢ, cₗ⟩ (trouver le centroïde le plus similaire)
+   - Mise à jour : cⱼ = (∑ᵢ rᵢⱼxᵢ)/(‖∑ᵢ rᵢⱼxᵢ‖₂) (normalisation du centroïde)
 
 #### 2. Sélection Adaptative de k : Méthode du Coude
 
@@ -443,19 +446,48 @@ s(i) = (b(i) - a(i)) / max(a(i), b(i))
 ```
 où a(i) = distance intra-cluster, b(i) = distance inter-cluster minimale.
 
-#### 3. Pré-calcul des MAX_DATA Voisins dans les Feuilles
+#### 3. Pré-calcul Intelligent des MAX_DATA Voisins dans les Feuilles
 
-Pour chaque feuille ℒ contenant m vecteurs, on calcule :
+Pour chaque feuille ℒ, notre algorithme distingue maintenant deux catégories de vecteurs :
 
+1. **Vecteurs naturellement assignés** : Les vecteurs qui tombent naturellement dans cette feuille selon le chemin d'arbre
+2. **Vecteurs globalement proches** : Vecteurs supplémentaires sélectionnés pour compléter jusqu'à MAX_DATA
+
+**Algorithme optimisé** :
+```python
+def select_closest_natural_vectors(feuille):
+    # D'abord, prioriser les vecteurs qui tombent naturellement dans la feuille
+    natural_vectors = {vecteurs qui suivent naturellement le chemin vers cette feuille}
+
+    if |natural_vectors| ≥ MAX_DATA:
+        # Sélectionner les MAX_DATA plus similaires au centroïde parmi les vecteurs naturels
+        return top_MAX_DATA(natural_vectors, similarity=⟨·, centroïde⟩)
+
+    # Sinon, compléter avec les vecteurs globaux les plus proches
+    result = natural_vectors
+    global_candidates = {tous les vecteurs} - natural_vectors
+
+    # Ajouter les plus proches jusqu'à obtenir MAX_DATA vecteurs
+    result += top_(MAX_DATA - |result|)(global_candidates, similarity=⟨·, centroïde⟩)
+
+    return result
 ```
-∀xᵢ ∈ ℒ : neighbors(xᵢ) = argmax_{j∈[1,n]} ⟨xᵢ, xⱼ⟩
-                           |neighbors(xᵢ)| = MAX_DATA
-```
 
-**Optimisation avec Index Transitoire** :
-- Construction d'un index FAISS temporaire sur l'ensemble global
-- Complexité réduite de O(m×n) à O(m×√n)
-- Stockage des indices triés par similarité décroissante
+**Optimisations et améliorations** :
+1. **Traitement des clusters vides** :
+   - Au lieu de créer des nœuds vides, chaque cluster vide reçoit maintenant les MAX_DATA vecteurs globalement les plus similaires à son centroïde
+   - Garantit que toutes les feuilles contiennent des vecteurs pertinents
+
+2. **Normalisation rigoureuse** :
+   - Les centroïdes sont systématiquement normalisés à chaque niveau (‖c‖₂ = 1)
+   - Assure que tous les produits scalaires correspondent à des similarités cosinus
+
+3. **Accélération avec FAISS** :
+   - Construction d'un index FAISS transitoire sur l'ensemble global
+   - Complexité réduite de O(m×n) à O(m×log(n))
+   - Implémentation multithreadée pour les grands datasets
+
+L'effet de cette amélioration est significatif : réduction drastique des feuilles vides et augmentation de la cohérence d'assignation, conduisant à un meilleur recall pour une même vitesse de recherche.
 
 ### Recherche : Analyse de Complexité
 

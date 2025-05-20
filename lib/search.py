@@ -11,6 +11,15 @@ import faiss
 from .tree import TreeNode
 from .io import VectorReader
 
+# Importer les optimisations Numba si disponibles
+try:
+    from .numba_optimizations import (
+        dot_product_batch, find_nearest_centroid_numba,
+        filter_candidates_numba, warmup_numba, NUMBA_AVAILABLE
+    )
+except ImportError:
+    NUMBA_AVAILABLE = False
+
 class Searcher:
     """
     Classe principale pour la recherche dans l'arbre K16.
@@ -18,7 +27,7 @@ class Searcher:
     """
 
     def __init__(self, tree: TreeNode, vectors_reader: VectorReader, use_faiss: bool = True,
-                 search_type: str = "single", beam_width: int = 3, max_data: int = 4000):
+                 search_type: str = "single", beam_width: int = 3, max_data: int = 4000, use_numba: bool = True):
         """
         Initialise le chercheur avec un arbre et un lecteur de vecteurs.
 
@@ -37,6 +46,7 @@ class Searcher:
         self.beam_width = beam_width
         self.max_data = max_data
         self.faiss_available = True
+        self.use_numba = use_numba and NUMBA_AVAILABLE
 
         # Vérifier si FAISS est disponible
         try:
@@ -47,23 +57,35 @@ class Searcher:
             if use_faiss:
                 print("⚠️ FAISS n'est pas disponible. Utilisation de numpy à la place.")
                 self.use_faiss = False
+
+        # Vérifier si Numba est disponible et initialiser
+        if self.use_numba:
+            try:
+                warmup_numba()
+                print("✓ Optimisations Numba activées")
+            except Exception as e:
+                print(f"⚠️ Erreur lors de l'initialisation Numba: {e}")
+                self.use_numba = False
     
     def find_nearest_centroid(self, centroids: np.ndarray, query: np.ndarray) -> int:
         """
         Trouve l'indice du centroïde le plus proche du vecteur query.
-        
+
         Args:
             centroids: Tableau des centroïdes
             query: Vecteur de requête
-            
+
         Returns:
             int: Indice du centroïde le plus proche
         """
-        # Pour les embeddings normalisés, utiliser le produit scalaire (similarité cosinus)
-        # Plus le produit scalaire est élevé, plus les vecteurs sont similaires
-        similarities = np.dot(centroids, query)
-        # Retourner l'indice du centroïde le plus similaire
-        return np.argmax(similarities)
+        if self.use_numba:
+            return find_nearest_centroid_numba(centroids, query)
+        else:
+            # Pour les embeddings normalisés, utiliser le produit scalaire (similarité cosinus)
+            # Plus le produit scalaire est élevé, plus les vecteurs sont similaires
+            similarities = np.dot(centroids, query)
+            # Retourner l'indice du centroïde le plus similaire
+            return np.argmax(similarities)
     
     def find_top_k_centroids(self, centroids: np.ndarray, query: np.ndarray, k: int) -> List[int]:
         """
@@ -282,10 +304,15 @@ class Searcher:
             # Convertir les indices locaux en indices globaux
             results = [candidates[idx] for idx in I[0]]
         else:
-            # Filtrage classique avec numpy
-            similarities = self.vectors_reader.dot(candidates, query)
-            top_k_indices = np.argsort(-similarities)[:k]
-            results = [candidates[idx] for idx in top_k_indices]
+            # Filtrage avec Numba si disponible, sinon numpy classique
+            if self.use_numba:
+                candidate_vectors = self.vectors_reader[candidates]
+                local_indices = filter_candidates_numba(candidate_vectors, query, k)
+                results = [candidates[idx] for idx in local_indices]
+            else:
+                similarities = self.vectors_reader.dot(candidates, query)
+                top_k_indices = np.argsort(-similarities)[:k]
+                results = [candidates[idx] for idx in top_k_indices]
         
         return results
     
