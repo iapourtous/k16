@@ -23,7 +23,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from lib.config import ConfigManager
 from lib.io import VectorReader, TreeIO
 from lib.clustering import build_tree
-from lib.optimize_indices import optimize_leaf_indices
 
 def format_time(seconds):
     """Formate le temps en heures, minutes, secondes."""
@@ -67,8 +66,6 @@ def main():
                         help=f"Nombre maximum de processus parallèles (par défaut: {build_config['max_workers']})")
     parser.add_argument("--gpu", action="store_true", default=build_config["use_gpu"],
                         help="Utiliser le GPU pour K-means si disponible")
-    parser.add_argument("--no-optimize", action="store_true", default=False,
-                        help="Désactiver l'optimisation HNSW des indices (activée par défaut)")
     
     args = parser.parse_args()
     
@@ -102,16 +99,7 @@ def main():
             use_gpu=args.gpu
         )
         
-        # Optimisation des indices avec HNSW (activée par défaut)
-        if not args.no_optimize:
-            print("\n🔍 Optimisation des indices avec HNSW...")
-            # Utiliser HNSW pour trouver les max_data vecteurs les plus proches pour chaque feuille
-            tree = optimize_leaf_indices(
-                tree=tree,
-                vectors=vectors_reader.vectors,
-                max_data=args.max_data,
-                use_gpu=args.gpu
-            )
+        # L'optimisation des indices avec HNSW a été retirée car elle n'améliore pas le recall
 
         # Sauvegarde de l'arbre (save_tree returns elapsed time that we don't need)
         TreeIO.save_tree(tree, args.tree_file)

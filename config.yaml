@@ -19,7 +19,7 @@ build_tree:
 
 # Paramètres pour la recherche (test.py)
 search:
-  k: 10                       # Nombre de voisins à rechercher
+  k: 100                      # Nombre de voisins à rechercher
   queries: 100                # Nombre de requêtes aléatoires pour les tests
   mode: "ram"                # Mode de chargement: "ram" ou "mmap"
   cache_size_mb: 500          # Taille du cache en mégaoctets (pour le mode mmap)
