@@ -39,8 +39,8 @@ prepare_data:
 
 # Paramètres pour les fichiers
 files:
-  vectors_dir: "/home/dess4ever/workspace/tool/K16/data"   # Répertoire des vecteurs
-  trees_dir: "/home/dess4ever/workspace/tool/K16/models"   # Répertoire des arbres
+  vectors_dir: "/home/dess4ever/workspace/k16/data"   # Répertoire des vecteurs
+  trees_dir: "/home/dess4ever/workspace/k16/models"   # Répertoire des arbres
   default_qa: "qa.txt"                                     # Fichier texte par défaut
   default_vectors: "data.bin"                              # Fichier de vecteurs par défaut
   default_tree: "tree.bsp"                                 # Fichier d'arbre par défaut

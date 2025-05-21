@@ -70,6 +70,7 @@ class Searcher:
     def find_nearest_centroid(self, centroids: np.ndarray, query: np.ndarray) -> int:
         """
         Trouve l'indice du centroïde le plus proche du vecteur query.
+        Utilise le batch processing pour le dot product.
 
         Args:
             centroids: Tableau des centroïdes
@@ -83,6 +84,7 @@ class Searcher:
         else:
             # Pour les embeddings normalisés, utiliser le produit scalaire (similarité cosinus)
             # Plus le produit scalaire est élevé, plus les vecteurs sont similaires
+            # Utiliser le batch processing pour le calcul du produit scalaire
             similarities = np.dot(centroids, query)
             # Retourner l'indice du centroïde le plus similaire
             return np.argmax(similarities)
@@ -90,6 +92,7 @@ class Searcher:
     def find_top_k_centroids(self, centroids: np.ndarray, query: np.ndarray, k: int) -> List[int]:
         """
         Trouve les k indices des centroïdes les plus proches du vecteur query.
+        Utilise le batch processing pour le dot product.
 
         Args:
             centroids: Tableau des centroïdes
@@ -100,7 +103,9 @@ class Searcher:
             List[int]: Liste des indices des k centroïdes les plus proches
         """
         # Pour les embeddings normalisés, utiliser le produit scalaire (similarité cosinus)
+        # Batch processing du produit scalaire
         similarities = np.dot(centroids, query)
+        
         # Retourner les indices des k centroïdes les plus similaires
         if k >= len(centroids):
             return list(range(len(centroids)))
@@ -126,6 +131,7 @@ class Searcher:
     def single_search_tree(self, query: np.ndarray, k: int = 10) -> List[int]:
         """
         Recherche simple : descend l'arbre en suivant une seule branche.
+        Utilise les centroïdes stockés dans les nœuds sous forme de tableau aligné avec children.
 
         Args:
             query: Vecteur de requête
@@ -139,17 +145,27 @@ class Searcher:
         path = []
 
         while node.children:
-            # Collecter les centroïdes des enfants
-            centroids = np.array([child.centroid for child in node.children])
-            # Trouver l'enfant avec le centroïde le plus proche
-            idx = self.find_nearest_centroid(centroids, query)
+            # Utiliser directement le tableau de centroïdes aligné avec children
+            if node.centroids is None:
+                # Si centroids n'est pas initialisé, l'initialiser
+                centroids = np.array([child.centroid for child in node.children])
+                node.centroids = centroids
+            else:
+                centroids = node.centroids
+                
+            # Batch processing du produit scalaire
+            # Calculer la similarité avec tous les centroïdes en une seule opération
+            similarities = np.dot(centroids, query)
+            # Trouver le centroïde avec la similarité maximale
+            idx = np.argmax(similarities)
+            
             # Descendre vers cet enfant
             node = node.children[idx]
             path.append(idx)
 
         # Nous sommes maintenant dans une feuille
-        # Récupérer directement les indices pré-calculés
-        candidate_indices = node.indices
+        # Récupérer directement les indices pré-calculés (maintenant en numpy array)
+        candidate_indices = node.indices.tolist()
 
         # Si aucun candidat n'est trouvé, retourner une liste vide
         if not candidate_indices:
@@ -161,6 +177,7 @@ class Searcher:
         """
         Recherche par faisceau : explore plusieurs branches prometteuses simultanément.
         Utilise une stratégie de remplissage pour garantir MAX_DATA candidats.
+        Utilise le batch processing pour le dot product.
 
         Args:
             query: Vecteur de requête
@@ -180,16 +197,30 @@ class Searcher:
             for node, score in beam:
                 if node.is_leaf():
                     # Stocker les feuilles avec leurs scores
-                    if node.indices:
+                    if len(node.indices) > 0:
                         leaves_data.append((node, score, 0))  # index 0 pour commencer
                 else:
                     # Explorer les k meilleures branches
-                    centroids = np.array([child.centroid for child in node.children])
-                    top_k_indices = self.find_top_k_centroids(centroids, query, self.beam_width)
+                    # Utiliser le tableau de centroïdes pré-calculé si disponible
+                    if node.centroids is None:
+                        # Si centroids n'est pas initialisé, l'initialiser
+                        centroids = np.array([child.centroid for child in node.children])
+                        node.centroids = centroids
+                    else:
+                        centroids = node.centroids
+                    
+                    # Batch processing pour calculer les similarités avec tous les centroïdes
+                    similarities = np.dot(centroids, query)
+                    
+                    # Prendre les beam_width meilleurs centroïdes
+                    if self.beam_width >= len(centroids):
+                        top_k_indices = np.arange(len(centroids))
+                    else:
+                        top_k_indices = np.argsort(-similarities)[:self.beam_width]
 
                     for idx in top_k_indices:
                         child = node.children[idx]
-                        child_score = np.dot(child.centroid, query)
+                        child_score = similarities[idx]
                         next_beam.append((child, child_score))
 
             # Garder les meilleures branches pour la prochaine itération
@@ -199,7 +230,7 @@ class Searcher:
 
         # Ajouter les feuilles finales
         for node, score in beam:
-            if node.is_leaf() and node.indices:
+            if node.is_leaf() and len(node.indices) > 0:
                 leaves_data.append((node, score, 0))
 
         # Phase 2: Stratégie de remplissage avec récursion
@@ -213,8 +244,9 @@ class Searcher:
             base_per_leaf = max(1, max_data // len(leaves_data))
 
             for i, (leaf, score, _) in enumerate(leaves_data):
-                n_to_take = min(base_per_leaf, len(leaf.indices))
-                candidates = leaf.indices[:n_to_take]
+                indices = leaf.indices
+                n_to_take = min(base_per_leaf, len(indices))
+                candidates = indices[:n_to_take].tolist()
                 all_candidates.update(candidates)
                 # Mettre à jour l'index courant pour cette feuille
                 leaves_data[i] = (leaf, score, n_to_take)
@@ -257,10 +289,11 @@ class Searcher:
             if len(candidates) >= max_data:
                 break
 
-            if current_idx < len(leaf.indices):
+            indices = leaf.indices.tolist()
+            if current_idx < len(indices):
                 # Essayer d'ajouter le prochain candidat non-dupliqué
-                while current_idx < len(leaf.indices):
-                    candidate = leaf.indices[current_idx]
+                while current_idx < len(indices):
+                    candidate = indices[current_idx]
                     if candidate not in candidates:
                         candidates.add(candidate)
                         candidates_added = True
@@ -276,6 +309,7 @@ class Searcher:
     def filter_candidates(self, candidates: List[int], query: np.ndarray, k: int) -> List[int]:
         """
         Filtre les candidats pour ne garder que les k plus proches.
+        Utilise le batch processing pour le dot product.
         
         Args:
             candidates: Liste des indices candidats
@@ -289,7 +323,7 @@ class Searcher:
             return candidates
         
         if self.use_faiss and self.faiss_available:
-            # Filtrage avec FAISS
+            # Filtrage avec FAISS (déjà optimisé pour le batch processing)
             # Récupérer les vecteurs candidats
             candidate_vectors = self.vectors_reader[candidates]
             
@@ -310,6 +344,8 @@ class Searcher:
                 local_indices = filter_candidates_numba(candidate_vectors, query, k)
                 results = [candidates[idx] for idx in local_indices]
             else:
+                # Utiliser directement la méthode dot du VectorReader qui est déjà optimisée
+                # pour le batch processing
                 similarities = self.vectors_reader.dot(candidates, query)
                 top_k_indices = np.argsort(-similarities)[:k]
                 results = [candidates[idx] for idx in top_k_indices]
@@ -409,15 +445,15 @@ class Searcher:
                 
                 return final_indices
         else:
-            # Recherche naïve avec numpy
+            # Recherche naïve avec numpy - utiliser des opérations vectorisées
             if self.vectors_reader.mode == "ram":
-                # Calculer la similarité cosinus avec tous les vecteurs
+                # Calculer la similarité cosinus avec tous les vecteurs en une seule opération
                 similarities = self.vectors_reader.dot(list(range(len(self.vectors_reader))), query)
                 
                 # Retourner les indices des k vecteurs les plus similaires
                 return np.argsort(-similarities)[:k].tolist()
             else:
-                # En mmap, faire le calcul par lots
+                # En mmap, faire le calcul par lots mais utiliser des opérations vectorisées
                 batch_size = 10000
                 n_batches = (len(self.vectors_reader) + batch_size - 1) // batch_size
                 
@@ -430,7 +466,7 @@ class Searcher:
                     end_idx = min((i + 1) * batch_size, len(self.vectors_reader))
                     batch_indices = list(range(start_idx, end_idx))
                     
-                    # Calculer la similarité pour ce lot
+                    # Calculer la similarité pour ce lot - dot est déjà optimisé pour le batch processing
                     batch_similarities = self.vectors_reader.dot(batch_indices, query)
                     
                     # Trouver les indices locaux des k plus similaires dans ce lot
@@ -438,7 +474,7 @@ class Searcher:
                     local_top_similarities = batch_similarities[local_top_indices]
                     
                     # Convertir les indices locaux en indices globaux
-                    global_top_indices = [batch_indices[idx] for idx in local_top_indices]
+                    global_top_indices = np.array([batch_indices[idx] for idx in local_top_indices])
                     
                     # Mettre à jour les top k
                     if len(top_k_indices) > 0:

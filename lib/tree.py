@@ -23,7 +23,8 @@ class TreeNode:
         self.centroid = centroid  # Centroïde du nœud
         self.level = level        # Niveau dans l'arbre
         self.children = []        # Pour les nœuds internes: liste des noeuds enfants
-        self.indices = []         # Pour les feuilles: liste pré-calculée des MAX_DATA indices les plus proches
+        self.centroids = None     # Pour les nœuds internes: tableau numpy des centroïdes des enfants (aligné avec children)
+        self.indices = np.array([], dtype=np.int32)  # Pour les feuilles: tableau numpy des MAX_DATA indices les plus proches
         
     def is_leaf(self) -> bool:
         """
@@ -42,15 +43,35 @@ class TreeNode:
             child: Nœud enfant à ajouter
         """
         self.children.append(child)
+        
+        # Mettre à jour le tableau des centroïdes
+        if self.centroids is None:
+            self.centroids = np.array([child.centroid])
+        else:
+            self.centroids = np.vstack([self.centroids, child.centroid])
     
-    def set_indices(self, indices: List[int]) -> None:
+    def set_children_centroids(self) -> None:
+        """
+        Construit le tableau des centroïdes à partir des centroïdes des enfants.
+        À appeler après avoir ajouté tous les enfants pour garantir l'alignement.
+        """
+        if not self.children:
+            return
+            
+        centroids = [child.centroid for child in self.children]
+        self.centroids = np.array(centroids)
+    
+    def set_indices(self, indices: Union[List[int], np.ndarray]) -> None:
         """
         Définit les indices associés à ce nœud (pour les feuilles).
         
         Args:
-            indices: Liste des indices des vecteurs les plus proches du centroïde
+            indices: Liste ou tableau des indices des vecteurs les plus proches du centroïde
         """
-        self.indices = indices
+        if isinstance(indices, list):
+            self.indices = np.array(indices, dtype=np.int32)
+        else:
+            self.indices = indices.astype(np.int32)
     
     def get_size(self) -> int:
         """

@@ -353,7 +353,7 @@ def find_optimal_k(vectors: np.ndarray, k_min: int = 2, k_max: int = 32, gpu: bo
     # Par défaut, retourner la médiane des k testés
     return (k_min + k_max) // 2
 
-def select_closest_vectors(vectors: np.ndarray, all_indices: List[int], centroid: np.ndarray, max_data: int) -> List[int]:
+def select_closest_vectors(vectors: np.ndarray, all_indices: List[int], centroid: np.ndarray, max_data: int) -> np.ndarray:
     """
     Sélectionne les max_data vecteurs les plus proches du centroïde.
 
@@ -364,7 +364,7 @@ def select_closest_vectors(vectors: np.ndarray, all_indices: List[int], centroid
         max_data: Nombre maximum de vecteurs à sélectionner
 
     Returns:
-        List[int]: Liste des indices des max_data vecteurs les plus proches du centroïde
+        np.ndarray: Tableau des indices des max_data vecteurs les plus proches du centroïde
     """
     # Calculer la similarité entre chaque vecteur et le centroïde
     similarities = np.dot(vectors, centroid)
@@ -377,13 +377,16 @@ def select_closest_vectors(vectors: np.ndarray, all_indices: List[int], centroid
     selected_local_indices = sorted_indices[:selected_count]
 
     # Convertir les indices locaux en indices globaux
-    selected_global_indices = [all_indices[i] for i in selected_local_indices]
+    if isinstance(all_indices, list):
+        all_indices = np.array(all_indices, dtype=np.int32)
+    
+    selected_global_indices = all_indices[selected_local_indices]
 
     return selected_global_indices
 
-def select_closest_natural_vectors(leaf_vectors: np.ndarray, leaf_indices: List[int],
-                                   global_vectors: np.ndarray, global_indices: List[int],
-                                   centroid: np.ndarray, max_data: int) -> List[int]:
+def select_closest_natural_vectors(leaf_vectors: np.ndarray, leaf_indices: Union[List[int], np.ndarray],
+                                  global_vectors: np.ndarray, global_indices: Union[List[int], np.ndarray],
+                                  centroid: np.ndarray, max_data: int) -> np.ndarray:
     """
     Sélectionne d'abord les vecteurs qui tombent naturellement dans la feuille,
     puis complète avec les plus proches au global si nécessaire.
@@ -397,10 +400,16 @@ def select_closest_natural_vectors(leaf_vectors: np.ndarray, leaf_indices: List[
         max_data: Nombre maximum de vecteurs à sélectionner
 
     Returns:
-        List[int]: Liste des indices des max_data vecteurs les plus proches du centroïde
+        np.ndarray: Tableau des indices des max_data vecteurs les plus proches du centroïde
     """
+    # Conversion en arrays numpy si nécessaire
+    if isinstance(leaf_indices, list):
+        leaf_indices = np.array(leaf_indices, dtype=np.int32)
+    if isinstance(global_indices, list):
+        global_indices = np.array(global_indices, dtype=np.int32)
+    
     # D'abord, prioriser les vecteurs qui tombent naturellement dans la feuille
-    leaf_indices_set = set(leaf_indices)
+    leaf_indices_set = set(leaf_indices.tolist())
 
     # Si la feuille contient déjà assez de vecteurs, pas besoin d'en chercher d'autres
     if len(leaf_indices) >= max_data:
@@ -410,10 +419,10 @@ def select_closest_natural_vectors(leaf_vectors: np.ndarray, leaf_indices: List[
         sorted_local_indices = np.argsort(-similarities)
         # Prendre les max_data plus proches
         selected_count = min(max_data, len(sorted_local_indices))
-        return [leaf_indices[i] for i in sorted_local_indices[:selected_count]]
+        return leaf_indices[sorted_local_indices[:selected_count]]
 
     # Sinon, compléter avec les plus proches au global
-    result = list(leaf_indices)  # Commencer avec les vecteurs naturels
+    result = leaf_indices.tolist()  # Commencer avec les vecteurs naturels
 
     # Calculer la similarité entre tous les vecteurs et le centroïde
     similarities = np.dot(global_vectors, centroid)
@@ -429,9 +438,9 @@ def select_closest_natural_vectors(leaf_vectors: np.ndarray, leaf_indices: List[
             if len(result) >= max_data:
                 break
 
-    return result
+    return np.array(result, dtype=np.int32)
 
-def build_tree_node(vectors: np.ndarray, global_vectors: np.ndarray, global_indices: List[int],
+def build_tree_node(vectors: np.ndarray, global_vectors: np.ndarray, global_indices: Union[List[int], np.ndarray],
                    level: int, max_depth: int, k_adaptive: bool, k: int, k_min: int, k_max: int,
                    max_leaf_size: int, max_data: int, use_gpu: bool = False) -> TreeNode:
     """
@@ -453,6 +462,10 @@ def build_tree_node(vectors: np.ndarray, global_vectors: np.ndarray, global_indi
     Returns:
         TreeNode: Un nœud de l'arbre
     """
+    # Conversion en arrays numpy si nécessaire
+    if isinstance(global_indices, list):
+        global_indices = np.array(global_indices, dtype=np.int32)
+        
     # Vérifier si nous avons assez de vecteurs pour continuer
     if len(vectors) == 0:
         # Créer un nœud vide avec un centroïde aléatoire normalisé
@@ -462,7 +475,7 @@ def build_tree_node(vectors: np.ndarray, global_vectors: np.ndarray, global_indi
         return empty_node
 
     # Récupérer les indices actuels des vecteurs dans ce nœud
-    local_indices = list(range(len(vectors)))
+    local_indices = np.arange(len(vectors), dtype=np.int32)
 
     # Calculer le centroïde de ce nœud (normalisé pour le produit scalaire)
     centroid = np.mean(vectors, axis=0)
@@ -481,11 +494,11 @@ def build_tree_node(vectors: np.ndarray, global_vectors: np.ndarray, global_indi
 
         # Sélectionner les max_data vecteurs les plus proches du centroïde
         # Priorité aux vecteurs qui tombent naturellement dans cette feuille, puis complément
-        leaf.indices = select_closest_natural_vectors(
-            vectors, [global_indices[i] for i in local_indices],
+        leaf.set_indices(select_closest_natural_vectors(
+            vectors, global_indices[local_indices],
             global_vectors, global_indices,
             centroid, max_data
-        )
+        ))
 
         return leaf
 
@@ -521,22 +534,25 @@ def build_tree_node(vectors: np.ndarray, global_vectors: np.ndarray, global_indi
     # Créer le noeud actuel avec son centroïde
     node = TreeNode(centroid, level)
 
-    # Créer des groupes pour chaque cluster
-    cluster_groups = [[] for _ in range(used_k)]
+    # Créer des groupes pour chaque cluster en utilisant numpy
     cluster_indices = [[] for _ in range(used_k)]
+    cluster_vectors = [[] for _ in range(used_k)]
 
     # Assigner chaque vecteur à son cluster
     for i, cluster_idx in enumerate(labels):
-        cluster_groups[cluster_idx].append(vectors[i])
+        cluster_vectors[cluster_idx].append(vectors[i])
         cluster_indices[cluster_idx].append(local_indices[i])
+    
+    # Convertir les listes en tableaux numpy
+    cluster_vectors_np = [np.array(vec_list) if vec_list else np.array([]) for vec_list in cluster_vectors]
+    cluster_indices_np = [np.array(idx_list, dtype=np.int32) if idx_list else np.array([], dtype=np.int32) for idx_list in cluster_indices]
 
     # Construire les enfants pour chaque cluster (récursivement)
     for i in range(used_k):
-        if len(cluster_groups[i]) > 0:
-            cluster_vectors = np.array(cluster_groups[i])
+        if len(cluster_vectors_np[i]) > 0:
             # Pour les nœuds internes, passer les vecteurs et indices actuels
             child = build_tree_node(
-                cluster_vectors,
+                cluster_vectors_np[i],
                 global_vectors,
                 global_indices,
                 level + 1,
@@ -549,7 +565,7 @@ def build_tree_node(vectors: np.ndarray, global_vectors: np.ndarray, global_indi
                 max_data,
                 use_gpu
             )
-            node.children.append(child)
+            node.add_child(child)
         else:
             # Si un cluster est vide, créer une feuille basée sur le centroïde
             empty_centroid = centroids[i]
@@ -561,14 +577,18 @@ def build_tree_node(vectors: np.ndarray, global_vectors: np.ndarray, global_indi
 
             # Sélectionner jusqu'à max_data indices les plus proches
             selected_count = min(max_data, len(sorted_indices))
-            empty_node.indices = [global_indices[sorted_indices[j]] for j in range(selected_count)]
+            empty_node.set_indices(global_indices[sorted_indices[:selected_count]])
 
-            node.children.append(empty_node)
+            node.add_child(empty_node)
 
+    # Bien que node.centroids soit déjà mis à jour dans add_child,
+    # on s'assure qu'il contient tous les centroïdes alignés avec children
+    node.set_children_centroids()
+    
     return node
 
-def process_cluster(i: int, vectors: np.ndarray, cluster_indices: List[int], cluster_vectors: np.ndarray,
-                   global_vectors: np.ndarray, global_indices: List[int], level: int, max_depth: int,
+def process_cluster(i: int, vectors: np.ndarray, cluster_indices: np.ndarray, cluster_vectors: np.ndarray,
+                   global_vectors: np.ndarray, global_indices: np.ndarray, level: int, max_depth: int,
                    k_adaptive: bool, k: int, k_min: int, k_max: int, max_leaf_size: int, max_data: int,
                    centroids: np.ndarray, use_gpu: bool = False) -> Tuple[int, Optional[TreeNode]]:
     """
@@ -624,7 +644,7 @@ def process_cluster(i: int, vectors: np.ndarray, cluster_indices: List[int], clu
 
         # Sélectionner jusqu'à max_data indices les plus proches
         selected_count = min(max_data, len(sorted_indices))
-        leaf.indices = [global_indices[sorted_indices[j]] for j in range(selected_count)]
+        leaf.set_indices(global_indices[sorted_indices[:selected_count]])
 
         return i, leaf
 
@@ -669,8 +689,8 @@ def build_tree(vectors: np.ndarray, max_depth: int = 6, k: int = 16, k_adaptive:
     leaf_sizes = []
     leaf_depths = []
 
-    # Initialiser les indices globaux
-    global_indices = list(range(len(vectors)))
+    # Initialiser les indices globaux comme un tableau numpy
+    global_indices = np.arange(len(vectors), dtype=np.int32)
 
     # Déterminer le nombre de clusters pour le premier niveau
     if k_adaptive:
@@ -696,25 +716,19 @@ def build_tree(vectors: np.ndarray, max_depth: int = 6, k: int = 16, k_adaptive:
     root_centroid = root_centroid / np.linalg.norm(root_centroid)
     root = TreeNode(root_centroid, 0)
 
-    # Créer des groupes pour chaque cluster
-    # Utiliser le nombre réel de clusters après suppression des vides
-    cluster_groups = [[] for _ in range(root_k)]
+    # Créer des groupes pour chaque cluster en utilisant numpy
+    # Utiliser une liste de tableaux pour améliorer l'efficacité
+    cluster_vectors = [[] for _ in range(root_k)]
     cluster_indices = [[] for _ in range(root_k)]
 
     # Assigner chaque vecteur à son cluster
     for i, cluster_idx in enumerate(labels):
-        cluster_groups[cluster_idx].append(vectors[i])
+        cluster_vectors[cluster_idx].append(vectors[i])
         cluster_indices[cluster_idx].append(global_indices[i])
-
-    # Convertir les listes en tableaux numpy
-    cluster_vectors = []
-    for i in range(root_k):
-        # Tous les clusters devraient avoir des vecteurs après la suppression des vides
-        if len(cluster_groups[i]) > 0:
-            cluster_vectors.append(np.array(cluster_groups[i]))
-        else:
-            print(f"  ⚠️ Avertissement: Cluster {i} vide malgré la suppression - cela ne devrait pas arriver")
-            cluster_vectors.append(np.array([]))
+    
+    # Convertir en tableaux numpy
+    cluster_vectors_np = [np.array(vec_list) if vec_list else np.array([]) for vec_list in cluster_vectors]
+    cluster_indices_np = [np.array(idx_list, dtype=np.int32) if idx_list else np.array([], dtype=np.int32) for idx_list in cluster_indices]
 
     # Construction parallèle des sous-arbres de premier niveau
     print(f"  → Construction parallèle des sous-arbres avec {max_workers} workers...")
@@ -725,8 +739,8 @@ def build_tree(vectors: np.ndarray, max_depth: int = 6, k: int = 16, k_adaptive:
         tasks.append((
             i,
             vectors,  # Pas utilisé directement dans le traitement des clusters
-            cluster_indices[i] if i < len(cluster_indices) else [],
-            cluster_vectors[i] if i < len(cluster_vectors) else np.array([]),
+            cluster_indices_np[i] if i < len(cluster_indices_np) else np.array([], dtype=np.int32),
+            cluster_vectors_np[i] if i < len(cluster_vectors_np) else np.array([]),
             vectors,  # Vecteurs globaux pour pré-calculer les indices proches
             global_indices,  # Indices globaux pour pré-calculer les indices proches
             1,  # Niveau des sous-arbres (1)
@@ -749,12 +763,15 @@ def build_tree(vectors: np.ndarray, max_depth: int = 6, k: int = 16, k_adaptive:
     # Reconstruire l'arbre à partir des résultats
     for i, child in results:
         if child is not None:
-            root.children.append(child)
+            root.add_child(child)
         else:
             # Ce cas ne devrait pas arriver avec le nouveau process_cluster
             # mais gardons-le par précaution
             empty_node = TreeNode(centroids[i], 1)
-            root.children.append(empty_node)
+            root.add_child(empty_node)
+    
+    # S'assurer que root.centroids est bien initialisé
+    root.set_children_centroids()
     
     # Collecter des statistiques sur les feuilles
     def collect_leaf_stats(node, level=0):

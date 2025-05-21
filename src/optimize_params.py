@@ -72,7 +72,7 @@ def test_tree_configuration(params: Dict, vectors_reader: VectorReader,
     })
     
     # Test différentes valeurs de beam_width sur le même arbre
-    beam_widths = [2,4,8,16,18,20,22,24]
+    beam_widths = [2,4,8,16,18]
     
     for beam_width in beam_widths:
         print(f"  🔍 Test mode beam (width={beam_width})...")
@@ -121,7 +121,7 @@ def optimize_parameters():
     # Paramètres d'arbre à tester
     tree_params = {
         'max_depth': [32],
-        'max_leaf_size': [10,15, 20, 25, 30],
+        'max_leaf_size': [5,10, 20, 30, 50],
         'max_data': [100,200,300,400,500]
     }
     
