@@ -8,7 +8,7 @@ import time
 from typing import List, Dict, Any, Optional, Union, Tuple
 import faiss
 
-from .tree import TreeNode
+from .tree import TreeNode, K16Tree
 from .io import VectorReader
 
 # Importer les optimisations Numba si disponibles
@@ -24,22 +24,33 @@ class Searcher:
     """
     Classe principale pour la recherche dans l'arbre K16.
     Implémente différentes stratégies de recherche pour trouver les vecteurs similaires.
+    Supporte la structure d'arbre traditionnelle et la structure plate optimisée.
     """
 
-    def __init__(self, tree: TreeNode, vectors_reader: VectorReader, use_faiss: bool = True,
+    def __init__(self, tree: Union[TreeNode, K16Tree], vectors_reader: VectorReader, use_faiss: bool = True,
                  search_type: str = "single", beam_width: int = 3, max_data: int = 4000, use_numba: bool = True):
         """
         Initialise le chercheur avec un arbre et un lecteur de vecteurs.
 
         Args:
-            tree: Racine de l'arbre K16
+            tree: Racine de l'arbre K16 ou instance de K16Tree
             vectors_reader: Lecteur de vecteurs
             use_faiss: Utiliser FAISS pour accélérer la recherche
             search_type: Type de recherche - "single" ou "beam"
             beam_width: Nombre de branches à explorer en recherche par faisceau
             max_data: Nombre de vecteurs à utiliser pour le remplissage dans beam_search_tree
+            use_numba: Utiliser les optimisations Numba si disponibles
         """
-        self.tree = tree
+        # Gérer les différents types d'arbre
+        if isinstance(tree, K16Tree):
+            self.k16tree = tree
+            self.tree = tree.root
+            self.flat_tree = tree.flat_tree
+        else:
+            self.k16tree = None
+            self.tree = tree
+            self.flat_tree = None
+
         self.vectors_reader = vectors_reader
         self.use_faiss = use_faiss
         self.search_type = search_type
@@ -47,6 +58,10 @@ class Searcher:
         self.max_data = max_data
         self.faiss_available = True
         self.use_numba = use_numba and NUMBA_AVAILABLE
+
+        # Si nous avons une structure plate, indiquer qu'elle sera utilisée
+        if self.flat_tree:
+            print("✓ Structure plate optimisée détectée et activée")
 
         # Vérifier si FAISS est disponible
         try:
@@ -115,6 +130,7 @@ class Searcher:
         """
         Recherche les k voisins les plus proches du vecteur query en descendant l'arbre.
         Utilise la stratégie configurée (single ou beam).
+        Si une structure plate optimisée est disponible, l'utilise en priorité.
 
         Args:
             query: Vecteur de requête
@@ -123,6 +139,12 @@ class Searcher:
         Returns:
             List[int]: Liste des indices des k voisins les plus proches
         """
+        # Optimisation: Si nous avons un arbre plat, l'utiliser directement (chemin rapide)
+        if self.flat_tree is not None:
+            # Appel direct à la méthode search_tree avec bypass complet du pipeline traditionnel
+            return self.flat_tree.search_tree(query, self.beam_width)
+
+        # Utiliser l'implémentation standard uniquement si pas d'arbre plat
         if self.search_type == "beam":
             return self.beam_search_tree(query, k)
         else:
@@ -356,21 +378,26 @@ class Searcher:
         """
         Recherche complète des k voisins les plus proches.
         Descend l'arbre, puis filtre les candidats.
-        
+
         Args:
             query: Vecteur de requête
             k: Nombre de voisins à retourner
-            
+
         Returns:
             List[int]: Liste des indices des k voisins les plus proches
         """
+        # Chemin rapide: Si nous avons un arbre plat et beam_width > 1, utiliser directement l'arbre plat
+        # sans passer par le filtrage (comme dans experiment/test_flat.py)
+        if self.flat_tree is not None and self.beam_width > 1:
+            return self.flat_tree.search_tree(query, self.beam_width)
+
         # Obtenir les candidats en descendant l'arbre
         candidates = self.search_tree(query, k)
-        
+
         # Si moins de candidats que demandé, retourner tous les candidats
         if len(candidates) <= k:
             return candidates
-        
+
         # Filtrer les candidats pour obtenir les k plus proches
         return self.filter_candidates(candidates, query, k)
     
@@ -503,7 +530,8 @@ class Searcher:
             Dict[str, Any]: Dictionnaire de métriques de performance
         """
         search_type_desc = f"{self.search_type} (beam_width={self.beam_width})" if self.search_type == "beam" else self.search_type
-        print(f"\n⏳ Évaluation avec {len(queries)} requêtes, k={k}, type de recherche: {search_type_desc}...")
+        flat_tree_desc = " avec arbre plat" if self.flat_tree is not None else ""
+        print(f"\n⏳ Évaluation avec {len(queries)} requêtes, k={k}, type de recherche: {search_type_desc}{flat_tree_desc}...")
 
         tree_search_time = 0
         tree_filter_time = 0
@@ -513,19 +541,32 @@ class Searcher:
 
         from tqdm.auto import tqdm
 
+        # Optimisation: mode direct pour arbre plat
+        use_direct_mode = self.flat_tree is not None and self.beam_width > 1
+
         for i, query in enumerate(tqdm(queries, desc="Évaluation")):
-            # Recherche avec l'arbre
-            start_time = time.time()
-            tree_candidates = self.search_tree(query)
-            tree_search_time += time.time() - start_time
+            # Recherche optimisée avec l'arbre
+            if use_direct_mode:
+                # Chemin ultra-rapide: appel direct au flat_tree
+                start_time = time.time()
+                tree_results = self.flat_tree.search_tree(query, self.beam_width)
+                total_search_time = time.time() - start_time
+                tree_search_time += total_search_time
+                tree_filter_time += 0  # Pas de filtrage
+                candidates_count.append(len(tree_results))
+            else:
+                # Chemin standard avec tree_search puis filter
+                start_time = time.time()
+                tree_candidates = self.search_tree(query)
+                tree_search_time += time.time() - start_time
 
-            # Stocker le nombre de candidats pour les statistiques
-            candidates_count.append(len(tree_candidates))
+                # Stocker le nombre de candidats pour les statistiques
+                candidates_count.append(len(tree_candidates))
 
-            # Filtrer les candidats pour ne garder que les k plus proches
-            filter_start_time = time.time()
-            tree_results = self.filter_candidates(tree_candidates, query, k)
-            tree_filter_time += time.time() - filter_start_time
+                # Filtrer les candidats pour ne garder que les k plus proches
+                filter_start_time = time.time()
+                tree_results = self.filter_candidates(tree_candidates, query, k)
+                tree_filter_time += time.time() - filter_start_time
 
             # Recherche naïve
             start_time = time.time()
@@ -538,7 +579,7 @@ class Searcher:
             recall_sum += recall
 
             if (i + 1) % 10 == 0 or (i + 1) == len(queries):
-                print(f"  → Requête {i+1}/{len(queries)}: Recall = {recall:.4f}, Candidats = {len(tree_candidates)}")
+                print(f"  → Requête {i+1}/{len(queries)}: Recall = {recall:.4f}, Candidats = {len(tree_results)}")
 
         # Moyennes
         avg_tree_time = tree_search_time / len(queries)

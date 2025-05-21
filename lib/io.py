@@ -384,28 +384,70 @@ class TreeIO:
     """Classe pour la lecture et l'écriture d'arbres K16."""
     
     @staticmethod
-    def save_tree(tree: Union[TreeNode, K16Tree], file_path: str) -> None:
+    def save_tree(tree: Union[TreeNode, K16Tree], file_path: str, save_flat: bool = True) -> None:
         """
-        Sauvegarde un arbre dans un fichier binaire avec pickle.
-        
+        Sauvegarde un arbre dans un fichier binaire.
+        Peut optionnellement sauvegarder une version plate optimisée.
+
         Args:
             tree: Arbre K16 ou nœud racine à sauvegarder
             file_path: Chemin du fichier de sortie
+            save_flat: Si True, sauvegarde également une version plate optimisée
         """
         start_time = time.time()
         print(f"⏳ Sauvegarde de l'arbre vers {file_path}...")
-        
+
         # Créer le répertoire si nécessaire
         os.makedirs(os.path.dirname(os.path.abspath(file_path)), exist_ok=True)
-        
+
         # Si on reçoit un K16Tree, extraire la racine
-        root = tree.root if isinstance(tree, K16Tree) else tree
-        
+        if isinstance(tree, K16Tree):
+            root = tree.root
+            flat_tree = tree.flat_tree
+        else:
+            root = tree
+            flat_tree = None
+
+        # Sauvegarder la structure hiérarchique standard
         with open(file_path, "wb") as f:
             pickle.dump(root, f)
-        
-        elapsed = time.time() - start_time
-        print(f"✓ Arbre sauvegardé vers {file_path} en {elapsed:.2f}s")
+
+        tree_elapsed = time.time() - start_time
+        print(f"✓ Arbre standard sauvegardé vers {file_path} en {tree_elapsed:.2f}s")
+
+        # Sauvegarder également une version plate optimisée si demandé
+        if save_flat:
+            flat_path = file_path
+            if not (flat_path.endswith('.flat.npy') or flat_path.endswith('.flat')):
+                # Remplacer l'extension si elle existe, sinon ajouter .flat.npy
+                if '.' in os.path.basename(flat_path):
+                    flat_path = os.path.splitext(flat_path)[0] + '.flat.npy'
+                else:
+                    flat_path = flat_path + '.flat.npy'
+
+            if flat_tree is None:
+                # Créer une structure plate si elle n'existe pas déjà
+                print(f"⏳ Conversion en structure plate optimisée...")
+                flat_start = time.time()
+                try:
+                    from .flat_tree import TreeFlat
+                    k16tree = K16Tree(root) if not isinstance(tree, K16Tree) else tree
+                    flat_tree = TreeFlat.from_tree(k16tree)
+                    flat_elapsed = time.time() - flat_start
+                    print(f"✓ Arbre converti en structure plate en {flat_elapsed:.2f}s")
+                except ImportError:
+                    print("⚠️ Module TreeFlat non trouvé. Structure plate non sauvegardée.")
+                    return
+
+            # Sauvegarder la structure plate
+            print(f"⏳ Sauvegarde de la structure plate vers {flat_path}...")
+            flat_save_start = time.time()
+            flat_tree.save(flat_path)
+            flat_save_elapsed = time.time() - flat_save_start
+            print(f"✓ Structure plate sauvegardée vers {flat_path} en {flat_save_elapsed:.2f}s")
+
+        total_elapsed = time.time() - start_time
+        print(f"✓ Sauvegarde terminée en {total_elapsed:.2f}s")
     
     @staticmethod
     def load_tree(file_path: str) -> Tuple[TreeNode, float]:
@@ -436,15 +478,66 @@ class TreeIO:
             raise
     
     @staticmethod
-    def load_as_k16tree(file_path: str) -> K16Tree:
+    def load_as_k16tree(file_path: str, use_flat_structure: bool = True) -> K16Tree:
         """
         Charge un arbre depuis un fichier binaire et l'encapsule dans un objet K16Tree.
-        
+        Peut optionnellement convertir en structure plate optimisée.
+
         Args:
             file_path: Chemin du fichier contenant l'arbre
-            
+            use_flat_structure: Si True, convertit l'arbre en structure plate pour des performances optimales
+
         Returns:
             K16Tree: L'arbre K16 encapsulant le nœud racine chargé
         """
+        # Ne pas utiliser de chargement de fichier plat précompilé
+        # La conversion à chaque fois est plus fiable
+        if False and use_flat_structure and not file_path.endswith('.flat.npy'):
+            flat_path = os.path.splitext(file_path)[0] + '.flat.npy'
+            if os.path.exists(flat_path):
+                try:
+                    print(f"⏳ Chargement de la structure plate optimisée depuis {flat_path}...")
+                    start_time = time.time()
+                    from .flat_tree import TreeFlat
+                    flat_tree = TreeFlat.load(flat_path)
+                    tree = K16Tree(None)
+                    tree.flat_tree = flat_tree
+                    elapsed = time.time() - start_time
+                    print(f"✓ Structure plate chargée en {elapsed:.2f}s")
+                    return tree
+                except (ImportError, Exception) as e:
+                    print(f"⚠️ Impossible de charger l'arbre plat: {e}")
+                    print("⚠️ Tentative de chargement standard...")
+
+        # Vérifier si c'est un fichier d'arbre plat
+        if file_path.endswith('.flat') or file_path.endswith('.flat.npy'):
+            try:
+                # Essayer de charger l'arbre plat directement
+                from .flat_tree import TreeFlat
+                flat_tree = TreeFlat.load(file_path)
+                tree = K16Tree(None)
+                tree.flat_tree = flat_tree
+                return tree
+            except (ImportError, FileNotFoundError) as e:
+                print(f"⚠️ Impossible de charger l'arbre plat: {e}")
+                print("⚠️ Tentative de chargement comme arbre standard...")
+                use_flat_structure = False
+
+        # Charger l'arbre standard
         root, _ = TreeIO.load_tree(file_path)
-        return K16Tree(root)
+        tree = K16Tree(root)
+
+        # Convertir en structure plate si demandé
+        if use_flat_structure:
+            try:
+                print("⏳ Conversion en structure plate optimisée...")
+                start_time = time.time()
+                from .flat_tree import TreeFlat
+                flat_tree = TreeFlat.from_tree(tree)
+                tree.flat_tree = flat_tree
+                elapsed = time.time() - start_time
+                print(f"✓ Arbre converti en structure plate en {elapsed:.2f}s")
+            except ImportError:
+                print("⚠️ Module TreeFlat non trouvé. Utilisation de la structure standard.")
+
+        return tree

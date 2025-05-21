@@ -27,9 +27,10 @@ search:
 
   # Configuration de la recherche par faisceau
   search_type: "beam"          # Type de recherche: "single" (descente simple) ou "beam" (faisceau)
-  beam_width: 1                # Nombre de branches à explorer simultanément (si search_type="beam")
+  beam_width: 2                # Nombre de branches à explorer simultanément (si search_type="beam")
                                # Plus élevé = meilleur recall mais plus lent
                                # Valeur recommandée : 2-5
+  use_flat_tree: true          # Utiliser la structure plate optimisée pour une recherche plus rapide
 
 # Paramètres pour la préparation des données (prepareData.py)
 prepare_data:

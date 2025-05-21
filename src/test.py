@@ -98,12 +98,14 @@ def main():
             cache_size_mb=args.cache_size
         )
         
-        # Chargement de l'arbre
-        tree, _ = TreeIO.load_tree(args.tree_file)  # Unpack the tuple to get just the tree
-
-        # Initialisation du chercheur avec les paramètres de configuration
+        # Initialisation des paramètres de configuration
         search_config = config_manager.get_section("search")
         build_config = config_manager.get_section("build_tree")
+
+        # Chargement de l'arbre avec conversion automatique en structure plate si configuré
+        tree_io = TreeIO()
+        use_flat_tree = search_config.get("use_flat_tree", True)  # Par défaut, utiliser la structure plate
+        tree = tree_io.load_as_k16tree(args.tree_file, use_flat_structure=use_flat_tree)
         searcher = Searcher(
             tree,
             vectors_reader,

@@ -96,26 +96,30 @@ class K16Tree:
     """
     Classe principale pour l'arbre K16.
     Gère un arbre hiérarchique optimisé pour la recherche rapide de vecteurs similaires.
+    Peut utiliser une structure plate optimisée pour des performances maximales.
     """
-    
+
     def __init__(self, root: Optional[TreeNode] = None):
         """
         Initialise un arbre K16.
-        
+
         Args:
             root: Nœud racine de l'arbre (optionnel)
         """
         self.root = root
         self.stats = {}  # Statistiques sur l'arbre
-    
+        self.flat_tree = None  # Version optimisée en structure plate
+
     def set_root(self, root: TreeNode) -> None:
         """
         Définit le nœud racine de l'arbre.
-        
+
         Args:
             root: Nœud racine à définir
         """
         self.root = root
+        # Réinitialiser l'arbre plat car il n'est plus valide
+        self.flat_tree = None
     
     def get_height(self) -> int:
         """
@@ -240,13 +244,20 @@ class K16Tree:
     
     def __str__(self) -> str:
         """Représentation sous forme de chaîne pour le débogage."""
-        if not self.root:
+        if not self.root and not self.flat_tree:
             return "Empty Tree"
-        
+
         stats = self.get_statistics()
-        return (f"K16Tree(nodes={stats['node_count']}, "
-                f"leaves={stats['leaf_count']}, "
-                f"height={stats['max_depth']})")
+
+        if self.flat_tree:
+            return (f"K16Tree(nodes={stats['node_count']}, "
+                    f"leaves={stats['leaf_count']}, "
+                    f"height={stats['max_depth']}, "
+                    f"optimized=True)")
+        else:
+            return (f"K16Tree(nodes={stats['node_count']}, "
+                    f"leaves={stats['leaf_count']}, "
+                    f"height={stats['max_depth']})")
     
     def save_statistics(self, file_path: str) -> None:
         """
