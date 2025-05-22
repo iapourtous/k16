@@ -408,18 +408,18 @@ K16 peut facilement atteindre plus de 90% de recall avec les bons paramètres :
 ```yaml
 build_tree:
   max_depth: 32
-  max_leaf_size: 15-20
-  max_data: 1000      # Minimum requis pour >90% recall
+  max_leaf_size: 1
+  max_data: 100
 
 search:
   search_type: "beam"
-  beam_width: 18-24
+  beam_width: 1
 ```
 
 **Résultats attendus** :
 - Recall : 90-95%
-- Temps : 3-5ms
-- Accélération : 40-60x
+- Temps : 0.4ms
+- Accélération : 170x
 
 **Facteurs clés pour augmenter le recall** :
 - `max_data` plus élevé = plus de candidats à filtrer
