@@ -19,7 +19,7 @@ build_tree:
 
 # Paramètres pour la recherche (test.py)
 search:
-  k: 100                      # Nombre de voisins à rechercher
+  k: 10                       # Nombre de voisins à rechercher
   queries: 100                # Nombre de requêtes aléatoires pour les tests
   mode: "ram"                # Mode de chargement: "ram" ou "mmap"
   cache_size_mb: 500          # Taille du cache en mégaoctets (pour le mode mmap)
@@ -29,8 +29,11 @@ search:
   search_type: "beam"          # Type de recherche: "single" (descente simple) ou "beam" (faisceau)
   beam_width: 1                # Nombre de branches à explorer simultanément (si search_type="beam")
                                # Plus élevé = meilleur recall mais plus lent
-                               # Valeur recommandée : 2-5
-  use_flat_tree: true          # Utiliser la structure plate optimisée pour une recherche plus rapide
+
+use_flat_tree: true          # Utiliser la structure plate optimisée pour une recherche plus rapide
+
+flat_tree:
+  head_dims: 512              # Nombre de dimensions conservées mot pour mot
 
 # Paramètres pour la préparation des données (prepareData.py)
 prepare_data:
@@ -45,3 +48,4 @@ files:
   default_qa: "qa.txt"                                     # Fichier texte par défaut
   default_vectors: "data.bin"                              # Fichier de vecteurs par défaut
   default_tree: "tree.bsp"                                 # Fichier d'arbre par défaut
+

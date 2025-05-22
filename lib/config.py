@@ -32,6 +32,9 @@ DEFAULT_CONFIG = {
         "cache_size_mb": 500,
         "use_faiss": True
     },
+    "flat_tree": {
+        "head_dims": 64  # Nombre de dimensions à forte variance conservées telles quelles
+    },
     "prepare_data": {
         "model": "intfloat/multilingual-e5-large",
         "batch_size": 128,
@@ -53,7 +56,7 @@ class ConfigManager:
         """
         Initialise le gestionnaire de configuration.
         
-        Args:
+        Paramètres :
             config_path: Chemin vers le fichier de configuration YAML.
                          Si None, utilise le chemin par défaut.
         """
@@ -64,7 +67,7 @@ class ConfigManager:
         """
         Charge la configuration depuis le fichier YAML.
         
-        Returns:
+        Retourne :
             Dict: La configuration chargée, ou la configuration par défaut en cas d'erreur.
         """
         try:
@@ -85,7 +88,7 @@ class ConfigManager:
         S'assure que la configuration contient toutes les sections nécessaires.
         Complète avec les valeurs par défaut si nécessaire.
         
-        Args:
+        Paramètres :
             config: Configuration à vérifier et compléter.
         """
         for section, default_values in DEFAULT_CONFIG.items():
@@ -100,10 +103,10 @@ class ConfigManager:
         """
         Récupère une section complète de la configuration.
         
-        Args:
+        Paramètres :
             section: Nom de la section à récupérer.
-            
-        Returns:
+
+        Retourne :
             Dict: La section demandée, ou un dictionnaire vide si la section n'existe pas.
         """
         return self.config.get(section, {})
@@ -112,12 +115,12 @@ class ConfigManager:
         """
         Récupère une valeur spécifique de la configuration.
         
-        Args:
+        Paramètres :
             section: La section contenant la clé.
             key: La clé à récupérer.
             default: Valeur par défaut si la clé n'existe pas.
-            
-        Returns:
+
+        Retourne :
             La valeur associée à la clé, ou la valeur par défaut si la clé n'existe pas.
         """
         section_data = self.get_section(section)
@@ -127,11 +130,11 @@ class ConfigManager:
         """
         Construit le chemin complet vers un fichier spécifié dans la configuration.
         
-        Args:
+        Paramètres :
             file_key: Clé du fichier dans la section 'files'.
             default: Valeur par défaut si la clé n'existe pas.
-            
-        Returns:
+
+        Retourne :
             Le chemin complet vers le fichier.
         """
         files_section = self.get_section("files")
@@ -158,7 +161,7 @@ class ConfigManager:
         """
         Recharge la configuration depuis un nouveau fichier.
         
-        Args:
+        Paramètres :
             config_path: Nouveau chemin de configuration. Si None, utilise le chemin actuel.
         """
         if config_path:

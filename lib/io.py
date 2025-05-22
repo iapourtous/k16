@@ -16,10 +16,10 @@ from collections import OrderedDict
 from .tree import TreeNode, K16Tree
 from .config import ConfigManager
 
-# Custom unpickler to handle legacy TreeNode objects
+# Unpickler personnalisé pour gérer les anciennes instances de TreeNode
 class CustomUnpickler(pickle.Unpickler):
     def find_class(self, module, name):
-        # Redirect old TreeNode references to our new module
+        # Redirige les anciennes références TreeNode vers notre nouveau module
         if name == 'TreeNode' and module == '__main__':
             from lib.tree import TreeNode
             return TreeNode

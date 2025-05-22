@@ -5,7 +5,7 @@ Cette version utilise les modules optimisés de la bibliothèque K16.
 Supporte deux modes de chargement des embeddings: RAM et mmap.
 Utilise un fichier de configuration YAML central.
 
-Usage:
+Utilisation :
     # Mode RAM (vecteurs en mémoire)
     python search_new.py vectors.bin tree.bin --k 100 --mode ram
 

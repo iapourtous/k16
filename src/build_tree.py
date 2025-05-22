@@ -5,7 +5,7 @@ Utilise les modules optimisés de la bibliothèque K16.
 Cette version pré-calcule directement les MAX_DATA indices les plus proches pour chaque feuille.
 Utilise un fichier de configuration YAML central.
 
-Usage:
+Utilisation :
     python build_tree_new.py vectors.bin tree.bin
     python build_tree_new.py --config /path/to/config.yaml
 """

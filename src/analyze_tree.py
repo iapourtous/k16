@@ -3,7 +3,7 @@
 Analyse détaillée d'un arbre K16.
 Affiche des statistiques et métriques sur la structure de l'arbre.
 
-Usage:
+Utilisation :
     python analyze_tree.py tree.bin
     python analyze_tree.py --config config.yaml
 """

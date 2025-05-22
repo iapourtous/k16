@@ -7,7 +7,7 @@ Prépare Natural Questions (open) – 307 k Q‑R – et génère :
 
 Utilise un fichier de configuration YAML central.
 
-Usage :
+Utilisation :
     python prepareData.py qa.txt vectors.bin \
            --model intfloat/multilingual-e5-large --batch-size 128
     python prepareData.py --config /path/to/config.yaml
