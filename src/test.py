@@ -2,7 +2,7 @@
 """
 Recherche ultra-rapide de voisins dans un arbre K16 optimisé.
 Cette version utilise les modules optimisés de la bibliothèque K16.
-Supporte deux modes de chargement des embeddings: RAM et mmap.
+Supporte trois modes de chargement des embeddings: RAM, mmap et mmap+ (vecteurs et arbre mappés).
 Utilise un fichier de configuration YAML central.
 
 Utilisation :
@@ -11,6 +11,9 @@ Utilisation :
 
     # Mode mmap (vecteurs mappés)
     python search_new.py vectors.bin tree.bin --k 100 --mode mmap
+
+    # Mode mmap+ (vecteurs et arbre mappés)
+    python search_new.py vectors.bin tree.bin --k 100 --mode mmap+
 
     # Utilisation de la configuration
     python search_new.py --config config.yaml
@@ -59,8 +62,8 @@ def main():
                         help=f"Nombre de voisins à rechercher (par défaut: {search_config['k']})")
     parser.add_argument("--queries", type=int, default=search_config["queries"],
                         help=f"Nombre de requêtes aléatoires à tester (par défaut: {search_config['queries']})")
-    parser.add_argument("--mode", choices=["ram", "mmap"], default=search_config["mode"],
-                        help=f"Mode de chargement des vecteurs (par défaut: {search_config['mode']})")
+    parser.add_argument("--mode", choices=["ram", "mmap", "mmap+"], default=search_config["mode"],
+                        help=f"Mode de chargement des vecteurs et de l'arbre (par défaut: {search_config['mode']})")
     parser.add_argument("--cache-size", type=int, default=search_config.get("cache_size_mb", 500),
                         help=f"Taille du cache en mégaoctets pour le mode mmap (par défaut: {search_config.get('cache_size_mb', 500)})")
     parser.add_argument("--use-faiss", action="store_true", default=search_config.get("use_faiss", True),
@@ -81,8 +84,10 @@ def main():
     print(f"\n🔍 K16 Search - Mode: {args.mode.upper()}, k={args.k}")
     print(f"  - Configuration: {args.config}")
     print(f"  - Vecteurs: {args.vectors_file}")
-    print(f"  - Arbre: {args.tree_file}")
-    cache_info = f", Cache: {args.cache_size} MB" if args.mode.lower() == "mmap" else ""
+    # Afficher le fichier d'arbre plat
+    tree_display = os.path.splitext(args.tree_file)[0] + ".flat.npy"
+    print(f"  - Arbre: {tree_display}")
+    cache_info = f", Cache: {args.cache_size} MB" if args.mode.lower() in ("mmap", "mmap+") else ""
     faiss_info = ", FAISS actif" if args.use_faiss else ", FAISS inactif"
     print(f"  - Paramètres: mode={args.mode}{cache_info}{faiss_info}, k={args.k}, queries={args.queries}")
     
@@ -98,10 +103,10 @@ def main():
         search_config = config_manager.get_section("search")
         build_config = config_manager.get_section("build_tree")
 
-        # Chargement de l'arbre avec conversion automatique en structure plate si configuré
+        # Chargement de l'arbre depuis la structure plate précompilée
         tree_io = TreeIO()
-        use_flat_tree = search_config.get("use_flat_tree", True)  # Par défaut, utiliser la structure plate
-        tree = tree_io.load_as_k16tree(args.tree_file, use_flat_structure=use_flat_tree)
+        mmap_tree = args.mode.lower() == "mmap+"
+        tree = tree_io.load_as_k16tree(args.tree_file, mmap_tree=mmap_tree)
         searcher = Searcher(
             tree,
             vectors_reader,

@@ -6,8 +6,8 @@ Cette version pré-calcule directement les MAX_DATA indices les plus proches pou
 Utilise un fichier de configuration YAML central.
 
 Utilisation :
-    python build_tree_new.py vectors.bin tree.bin
-    python build_tree_new.py --config /path/to/config.yaml
+    python build_tree_new.py [--mmap-tree] vectors.bin tree.bin
+    python build_tree_new.py [--mmap-tree] --config /path/to/config.yaml
 """
 
 import os
@@ -66,6 +66,8 @@ def main():
                         help=f"Nombre maximum de processus parallèles (par défaut: {build_config['max_workers']})")
     parser.add_argument("--gpu", action="store_true", default=build_config["use_gpu"],
                         help="Utiliser le GPU pour K-means si disponible")
+    parser.add_argument("--mmap-tree", action="store_true", default=False,
+                        help="Sauvegarder la structure plate en format répertoire pour 'mmap+' (memory-mapping de l'arbre)")
     
     args = parser.parse_args()
     
@@ -101,22 +103,35 @@ def main():
         
         # L'optimisation des indices avec HNSW a été retirée car elle n'améliore pas le recall
 
-        # Sauvegarde de l'arbre (save_tree returns elapsed time that we don't need)
-        TreeIO.save_tree(tree, args.tree_file)
+        # Conversion et sauvegarde directe en structure plate
+        flat_path = args.tree_file
+        if not (flat_path.endswith(".flat.npy") or flat_path.endswith(".flat")):
+            flat_path = os.path.splitext(flat_path)[0] + ".flat.npy"
+        print(f"⏳ Conversion et sauvegarde de la structure plate vers {flat_path}...")
+        from lib.flat_tree import TreeFlat
+        from lib.tree import K16Tree
+        k16tree = K16Tree(tree)
+        flat_tree = TreeFlat.from_tree(k16tree)
+        if args.mmap_tree:
+            flat_tree.save(flat_path, mmap_dir=True)
+            print(f"✓ Structure plate sauvegardée vers {os.path.splitext(flat_path)[0]}/")
+        else:
+            flat_tree.save(flat_path)
+            print(f"✓ Structure plate sauvegardée vers {flat_path}")
 
         total_time = time.time() - total_start_time
         print("\n✓ Construction de l'arbre optimisé terminée.")
         print(f"  - Configuration  : {args.config}")
         print(f"  - Vecteurs       : {args.vectors_file}")
-        print(f"  - Arbre optimisé : {args.tree_file}")
+        print(f"  - Structure plate: {flat_path}")
         print(f"  - Paramètres     : profondeur_max={args.max_depth}, {'k adaptatif' if args.k_adaptive else f'k={args.k}'}")
         print(f"                     max_leaf_size={args.max_leaf_size}, MAX_DATA={args.max_data}")
         print(f"                     max_workers={args.max_workers}, gpu={args.gpu}")
         print(f"  - Temps total    : {format_time(total_time)}")
-        
+
         # Instructions pour l'utilisation du script de recherche
         print("\nPour tester la recherche dans cet arbre :")
-        print(f"  python src/test.py {args.vectors_file} {args.tree_file} --k 100")
+        print(f"  python src/test.py {args.vectors_file} {flat_path} --k 100")
         print(f"  ou, en utilisant la configuration :")
         print(f"  python src/test.py --config {args.config}")
         

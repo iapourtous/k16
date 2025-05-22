@@ -232,6 +232,7 @@ build_tree:
 
   use_gpu: true              # Utilise le GPU pour K-means (si disponible)
                              # Accélère significativement la construction
+  # Pour activer mmap+ (memory-mapping de l'arbre), exécutez build_tree.py avec --mmap-tree
 ```
 
 ### Paramètres de Recherche
@@ -247,6 +248,7 @@ search:
   mode: "ram"                # Mode de chargement des vecteurs
                              # - "ram" : charge tout en mémoire (plus rapide)
                              # - "mmap" : mapping mémoire (économise la RAM)
+                             # - "mmap+" : mapping mémoire des vecteurs et de la structure plate (économise davantage la RAM)
 
   cache_size_mb: 500         # Taille du cache LRU pour le mode mmap
                              # Plus grand = meilleures performances en mmap

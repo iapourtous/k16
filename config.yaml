@@ -17,17 +17,18 @@ build_tree:
   max_workers: 8              # Nombre maximum de processus parallèles (default: CPUs)
   use_gpu: true               # Utiliser le GPU pour K-means si disponible
 
+
 # Paramètres pour la recherche (test.py)
 search:
   k: 10                       # Nombre de voisins à rechercher
   queries: 100                # Nombre de requêtes aléatoires pour les tests
-  mode: "ram"                # Mode de chargement: "ram" ou "mmap"
-  cache_size_mb: 500          # Taille du cache en mégaoctets (pour le mode mmap)
+  mode: "ram"               # Mode de chargement: "ram", "mmap" ou "mmap+"
+  cache_size_mb: 500          # Taille du cache en mégaoctets (pour les modes mmap et mmap+)
   use_faiss: true             # Utiliser FAISS pour la recherche naïve et le filtrage final
 
   # Configuration de la recherche par faisceau
   search_type: "beam"          # Type de recherche: "single" (descente simple) ou "beam" (faisceau)
-  beam_width: 1                # Nombre de branches à explorer simultanément (si search_type="beam")
+  beam_width: 2                # Nombre de branches à explorer simultanément (si search_type="beam")
                                # Plus élevé = meilleur recall mais plus lent
 
 use_flat_tree: true          # Utiliser la structure plate optimisée pour une recherche plus rapide

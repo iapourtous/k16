@@ -42,15 +42,14 @@ Principaux points différenciants par rapport à l'implémentation précédente 
 from __future__ import annotations
 
 import os
-import pickle
-import time
+import json
 from typing import List, Optional, TYPE_CHECKING, Dict, Any
 
 import numpy as np
 
 from .tree import TreeNode, K16Tree
 
-if TYPE_CHECKING:  # only for static type-checkers
+if TYPE_CHECKING:  # uniquement pour les vérificateurs de types statiques
     from .io import VectorReader
 
 
@@ -348,30 +347,73 @@ class TreeFlat:
         return candidates
 
     # ------------------------------------------------------------------
-    # Save / load
+    # Sauvegarde / chargement
     # ------------------------------------------------------------------
-    def save(self, file_path: str) -> None:
-        data = {
-            "dims": self.dims,
-            "d_head": self.d_head,
-            "depth": self.depth,
-            "max_depth": self.max_depth,
-            "n_nodes": self.n_nodes,
-            "n_leaves": self.n_leaves,
-            "n_levels": self.n_levels,
-            "top_dims": self.top_dims,
-            "centroids_head": self.centroids_head,
-            "tail_norms": self.tail_norms,
-            "child_ptr": self.child_ptr,
-            "leaf_offset": self.leaf_offset,
-            "leaf_data": self.leaf_data,
-            "leaf_bounds": self.leaf_bounds,
-        }
-        np.save(file_path, data, allow_pickle=True)
+    def save(self, file_path: str, mmap_dir: bool = False) -> None:
+        """
+        Sauvegarde de la structure plate. Par défaut, sérialise en un seul fichier
+        numpy pickle. Si mmap_dir=True, crée un répertoire de fichiers numpy
+        pour permettre le memory-mapping individuel des tableaux.
+        """
+        if mmap_dir:
+            base = os.path.splitext(file_path)[0]
+            os.makedirs(base, exist_ok=True)
+            meta = {
+                "dims": self.dims,
+                "d_head": self.d_head,
+                "depth": self.depth,
+                "max_depth": self.max_depth,
+                "n_nodes": self.n_nodes,
+                "n_leaves": self.n_leaves,
+                "n_levels": self.n_levels,
+                "top_dims": self.top_dims.tolist(),
+            }
+            # Enregistrement des métadonnées
+            with open(os.path.join(base, 'meta.json'), 'w') as f:
+                json.dump(meta, f)
+            # Sérialisation des tableaux numpy séparément
+            for i, arr in enumerate(self.centroids_head):
+                np.save(os.path.join(base, f'centroids_head_{i}.npy'), arr)
+            for i, arr in enumerate(self.tail_norms):
+                np.save(os.path.join(base, f'tail_norms_{i}.npy'), arr)
+            for i, arr in enumerate(self.child_ptr):
+                np.save(os.path.join(base, f'child_ptr_{i}.npy'), arr)
+            np.save(os.path.join(base, 'leaf_offset.npy'), self.leaf_offset)
+            np.save(os.path.join(base, 'leaf_data.npy'), self.leaf_data)
+            np.save(os.path.join(base, 'leaf_bounds.npy'), self.leaf_bounds)
+        else:
+            data = {
+                "dims": self.dims,
+                "d_head": self.d_head,
+                "depth": self.depth,
+                "max_depth": self.max_depth,
+                "n_nodes": self.n_nodes,
+                "n_leaves": self.n_leaves,
+                "n_levels": self.n_levels,
+                "top_dims": self.top_dims,
+                "centroids_head": self.centroids_head,
+                "tail_norms": self.tail_norms,
+                "child_ptr": self.child_ptr,
+                "leaf_offset": self.leaf_offset,
+                "leaf_data": self.leaf_data,
+                "leaf_bounds": self.leaf_bounds,
+            }
+            np.save(file_path, data, allow_pickle=True)
 
     @classmethod
-    def load(cls, file_path: str) -> "TreeFlat":
-        data = np.load(file_path, allow_pickle=True).item()
+    def load(cls, file_path: str, mmap_mode: Optional[str] = None) -> "TreeFlat":
+        """
+        Charge la structure plate. Si mmap_mode fourni et qu'un répertoire mmap existe,
+        les tableaux numpy sont chargés en memory-mapping depuis ce répertoire;
+        sinon, charge le fichier en mémoire via pickle numpy.
+        """
+        base = os.path.splitext(file_path)[0]
+        if mmap_mode and os.path.isdir(base):
+            return cls._load_from_mmap_dir(base)
+        if mmap_mode:
+            data = np.load(file_path, allow_pickle=True, mmap_mode=mmap_mode).item()
+        else:
+            data = np.load(file_path, allow_pickle=True).item()
         obj = cls(data["dims"], data["max_depth"], data["d_head"])
 
         obj.depth = data["depth"]
@@ -387,9 +429,46 @@ class TreeFlat:
         obj.leaf_data = data["leaf_data"]
         obj.leaf_bounds = data["leaf_bounds"]
 
-        # Rebuild nodes_by_level placeholders (sizes only); not used by algorithm
+        # Rebuild nodes_by_level placeholders (sizes only)
         obj.nodes_by_level = [list(range(mat.shape[0])) for mat in obj.centroids_head]
 
+        return obj
+
+    @classmethod
+    def _load_from_mmap_dir(cls, base: str) -> "TreeFlat":
+        """
+        Charge la structure plate depuis un répertoire créé par save(..., mmap_dir=True).
+        """
+        # Chargement des métadonnées
+        meta_path = os.path.join(base, 'meta.json')
+        with open(meta_path, 'r') as f:
+            meta = json.load(f)
+        obj = cls(int(meta['dims']), int(meta['max_depth']), int(meta['d_head']))
+
+        obj.depth = int(meta['depth'])
+        obj.n_nodes = int(meta['n_nodes'])
+        obj.n_leaves = int(meta['n_leaves'])
+        obj.n_levels = int(meta['n_levels'])
+        obj.top_dims = np.array(meta['top_dims'], dtype=np.int32)
+
+        # Chargement memory-mapping des tableaux numpy
+        obj.centroids_head = [
+            np.load(os.path.join(base, f'centroids_head_{i}.npy'), mmap_mode='r')
+            for i in range(obj.n_levels)
+        ]
+        obj.tail_norms = [
+            np.load(os.path.join(base, f'tail_norms_{i}.npy'), mmap_mode='r')
+            for i in range(obj.n_levels)
+        ]
+        obj.child_ptr = [
+            np.load(os.path.join(base, f'child_ptr_{i}.npy'), mmap_mode='r')
+            for i in range(obj.n_levels)
+        ]
+        obj.leaf_offset = np.load(os.path.join(base, 'leaf_offset.npy'), mmap_mode='r')
+        obj.leaf_data = np.load(os.path.join(base, 'leaf_data.npy'), mmap_mode='r')
+        obj.leaf_bounds = np.load(os.path.join(base, 'leaf_bounds.npy'), mmap_mode='r')
+
+        obj.nodes_by_level = [list(range(mat.shape[0])) for mat in obj.centroids_head]
         return obj
 
     # ------------------------------------------------------------------

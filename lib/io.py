@@ -75,8 +75,8 @@ class VectorReader:
         self.file_path = file_path
         self.mode = mode.lower()
         
-        if self.mode not in ["ram", "mmap"]:
-            raise ValueError("Mode doit être 'ram' ou 'mmap'")
+        if self.mode not in ["ram", "mmap", "mmap+"]:
+            raise ValueError("Mode doit être 'ram', 'mmap' ou 'mmap+'")
         
         # Paramètres des vecteurs
         self.n = 0  # Nombre de vecteurs
@@ -478,66 +478,36 @@ class TreeIO:
             raise
     
     @staticmethod
-    def load_as_k16tree(file_path: str, use_flat_structure: bool = True) -> K16Tree:
+    def load_as_k16tree(file_path: str, mmap_tree: bool = False) -> K16Tree:
         """
-        Charge un arbre depuis un fichier binaire et l'encapsule dans un objet K16Tree.
-        Peut optionnellement convertir en structure plate optimisée.
+        Charge la structure plate optimisée de l'arbre depuis le fichier précompilé.
 
         Args:
-            file_path: Chemin du fichier contenant l'arbre
-            use_flat_structure: Si True, convertit l'arbre en structure plate pour des performances optimales
+            file_path: Chemin du fichier binaire de l'arbre ou du fichier plat (.flat.npy)
+            mmap_tree: Si True, charge la structure plate en mode mmap pour économiser la RAM
 
         Returns:
-            K16Tree: L'arbre K16 encapsulant le nœud racine chargé
+            K16Tree: Arbre K16 chargé avec la structure plate
         """
-        # Ne pas utiliser de chargement de fichier plat précompilé
-        # La conversion à chaque fois est plus fiable
-        if False and use_flat_structure and not file_path.endswith('.flat.npy'):
-            flat_path = os.path.splitext(file_path)[0] + '.flat.npy'
-            if os.path.exists(flat_path):
-                try:
-                    print(f"⏳ Chargement de la structure plate optimisée depuis {flat_path}...")
-                    start_time = time.time()
-                    from .flat_tree import TreeFlat
-                    flat_tree = TreeFlat.load(flat_path)
-                    tree = K16Tree(None)
-                    tree.flat_tree = flat_tree
-                    elapsed = time.time() - start_time
-                    print(f"✓ Structure plate chargée en {elapsed:.2f}s")
-                    return tree
-                except (ImportError, Exception) as e:
-                    print(f"⚠️ Impossible de charger l'arbre plat: {e}")
-                    print("⚠️ Tentative de chargement standard...")
-
-        # Vérifier si c'est un fichier d'arbre plat
+        # Déterminer le chemin du fichier plat
         if file_path.endswith('.flat') or file_path.endswith('.flat.npy'):
+            flat_path = file_path
+        else:
+            flat_path = os.path.splitext(file_path)[0] + '.flat.npy'
+
+        print(f"⏳ Chargement de la structure plate optimisée depuis {flat_path}...")
+        start_time = time.time()
+        from .flat_tree import TreeFlat
+        if mmap_tree:
             try:
-                # Essayer de charger l'arbre plat directement
-                from .flat_tree import TreeFlat
-                flat_tree = TreeFlat.load(file_path)
-                tree = K16Tree(None)
-                tree.flat_tree = flat_tree
-                return tree
-            except (ImportError, FileNotFoundError) as e:
-                print(f"⚠️ Impossible de charger l'arbre plat: {e}")
-                print("⚠️ Tentative de chargement comme arbre standard...")
-                use_flat_structure = False
-
-        # Charger l'arbre standard
-        root, _ = TreeIO.load_tree(file_path)
-        tree = K16Tree(root)
-
-        # Convertir en structure plate si demandé
-        if use_flat_structure:
-            try:
-                print("⏳ Conversion en structure plate optimisée...")
-                start_time = time.time()
-                from .flat_tree import TreeFlat
-                flat_tree = TreeFlat.from_tree(tree)
-                tree.flat_tree = flat_tree
-                elapsed = time.time() - start_time
-                print(f"✓ Arbre converti en structure plate en {elapsed:.2f}s")
-            except ImportError:
-                print("⚠️ Module TreeFlat non trouvé. Utilisation de la structure standard.")
-
+                flat_tree = TreeFlat.load(flat_path, mmap_mode='r')
+            except ValueError as e:
+                print(f"⚠️ Échec du memory-mapping de l'arbre ({e}), chargement en RAM.")
+                flat_tree = TreeFlat.load(flat_path)
+        else:
+            flat_tree = TreeFlat.load(flat_path)
+        tree = K16Tree(None)
+        tree.flat_tree = flat_tree
+        elapsed = time.time() - start_time
+        print(f"✓ Structure plate chargée en {elapsed:.2f}s")
         return tree
