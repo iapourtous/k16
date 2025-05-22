@@ -22,18 +22,18 @@ from lib.io import VectorReader, TreeIO
 from lib.search import Searcher
 from lib.clustering import build_tree
 
-def test_tree_configuration(params: Dict, vectors_reader: VectorReader, 
+def test_tree_configuration(params: Dict, vectors_reader: VectorReader,
                            test_queries: np.ndarray, k: int = 10) -> List[Dict]:
     """
     Construit un arbre et teste toutes les configurations de beam sur cet arbre.
     """
     print(f"\n🌳 Construction avec : max_depth={params['max_depth']}, "
           f"max_leaf_size={params['max_leaf_size']}, max_data={params['max_data']}")
-    
+
     # Construction de l'arbre
     print("  🔨 Construction de l'arbre...")
     build_start = time.time()
-    
+
     tree = build_tree(
         vectors=vectors_reader.vectors,
         max_depth=params['max_depth'],
@@ -46,58 +46,75 @@ def test_tree_configuration(params: Dict, vectors_reader: VectorReader,
         max_workers=12,
         use_gpu=True
     )
-    
+
     build_time = time.time() - build_start
     print(f"  ✓ Arbre construit en {build_time:.2f}s")
-    
+
+    # Convertir en k16tree
+    from lib.tree import K16Tree
+    k16tree = K16Tree(tree)
+
+    # Utiliser la structure plate optimisée
+    use_flat_tree = params.get('use_flat_tree', True)
+    if use_flat_tree:
+        print("  🔨 Conversion en structure plate optimisée...")
+        flat_start = time.time()
+        from lib.flat_tree import TreeFlat
+        flat_tree = TreeFlat.from_tree(k16tree)
+        k16tree.flat_tree = flat_tree
+        flat_time = time.time() - flat_start
+        print(f"  ✓ Structure plate générée en {flat_time:.2f}s")
+
     results = []
-    
+
     # Test en mode single
     print("  🔍 Test mode single...")
     searcher_single = Searcher(
-        tree, 
-        vectors_reader, 
+        k16tree,
+        vectors_reader,
         use_faiss=True,
         search_type="single",
         max_data=params['max_data']
     )
-    
+
     single_results = searcher_single.evaluate_search(test_queries, k=k)
-    
+
     results.append({
         'params': params.copy(),
         'build_time': build_time,
         'search_type': 'single',
+        'use_flat_tree': use_flat_tree,
         'results': single_results
     })
-    
+
     # Test différentes valeurs de beam_width sur le même arbre
-    beam_widths = [2,4,8,16,18]
-    
+    beam_widths = [2, 3, 4, 6, 8]
+
     for beam_width in beam_widths:
         print(f"  🔍 Test mode beam (width={beam_width})...")
-        
+
         beam_params = params.copy()
         beam_params['beam_width'] = beam_width
-        
+
         searcher_beam = Searcher(
-            tree, 
-            vectors_reader, 
+            k16tree,
+            vectors_reader,
             use_faiss=True,
             search_type="beam",
             beam_width=beam_width,
             max_data=params['max_data']
         )
-        
+
         beam_results = searcher_beam.evaluate_search(test_queries, k=k)
-        
+
         results.append({
             'params': beam_params,
             'build_time': build_time,  # Même temps de construction
             'search_type': 'beam',
+            'use_flat_tree': use_flat_tree,
             'results': beam_results
         })
-    
+
     return results
 
 def optimize_parameters():
@@ -121,8 +138,9 @@ def optimize_parameters():
     # Paramètres d'arbre à tester
     tree_params = {
         'max_depth': [32],
-        'max_leaf_size': [5,10, 20, 30, 50],
-        'max_data': [100,200,300,400,500]
+        'max_leaf_size': [5, 10, 20, 30, 50],
+        'max_data': [100, 200, 300, 400, 500],
+        'use_flat_tree': [True]  # Structure plate activée par défaut pour tous les tests
     }
     
     # Générer toutes les combinaisons d'arbres
@@ -163,59 +181,96 @@ def analyze_results(results: List[Dict]):
     """
     Analyse les résultats et trouve les meilleures configurations.
     """
-    # Séparer single et beam
+    # Séparer single et beam, avec structure plate
     single_results = [r for r in results if r['search_type'] == 'single']
     beam_results = [r for r in results if r['search_type'] == 'beam']
-    
-    # Meilleure performance single
+    flat_results = [r for r in results if r.get('use_flat_tree', False)]
+
+    # Meilleure performance single avec structure plate
     if single_results:
-        best_single_speed = min(single_results, 
+        best_single_speed = min(single_results,
                                key=lambda x: x['results']['avg_total_time'])
-        best_single_recall = max(single_results, 
+        best_single_recall = max(single_results,
                                 key=lambda x: x['results']['avg_recall'])
-        
-        print("\n🏆 Meilleur mode SINGLE :")
+
+        flat_status = "structure plate" if best_single_speed.get('use_flat_tree', False) else "structure standard"
+        print(f"\n🏆 Meilleur mode SINGLE ({flat_status}) :")
         print(f"  Vitesse maximale : {best_single_speed['params']}")
         print(f"    - Temps : {best_single_speed['results']['avg_total_time']*1000:.2f}ms")
         print(f"    - Recall : {best_single_speed['results']['avg_recall']:.4f}")
-        print(f"  Recall maximal : {best_single_recall['params']}")
+
+        flat_status = "structure plate" if best_single_recall.get('use_flat_tree', False) else "structure standard"
+        print(f"  Recall maximal ({flat_status}) : {best_single_recall['params']}")
         print(f"    - Temps : {best_single_recall['results']['avg_total_time']*1000:.2f}ms")
         print(f"    - Recall : {best_single_recall['results']['avg_recall']:.4f}")
-    
-    # Meilleure performance beam
+
+    # Meilleure performance beam avec structure plate
     if beam_results:
-        best_beam_speed = min(beam_results, 
+        best_beam_speed = min(beam_results,
                              key=lambda x: x['results']['avg_total_time'])
-        best_beam_recall = max(beam_results, 
+        best_beam_recall = max(beam_results,
                               key=lambda x: x['results']['avg_recall'])
-        
-        print("\n🏆 Meilleur mode BEAM :")
+
+        flat_status = "structure plate" if best_beam_speed.get('use_flat_tree', False) else "structure standard"
+        print(f"\n🏆 Meilleur mode BEAM ({flat_status}) :")
         print(f"  Vitesse maximale : {best_beam_speed['params']}")
         print(f"    - Temps : {best_beam_speed['results']['avg_total_time']*1000:.2f}ms")
         print(f"    - Recall : {best_beam_speed['results']['avg_recall']:.4f}")
-        print(f"  Recall maximal : {best_beam_recall['params']}")
+
+        flat_status = "structure plate" if best_beam_recall.get('use_flat_tree', False) else "structure standard"
+        print(f"  Recall maximal ({flat_status}) : {best_beam_recall['params']}")
         print(f"    - Temps : {best_beam_recall['results']['avg_total_time']*1000:.2f}ms")
         print(f"    - Recall : {best_beam_recall['results']['avg_recall']:.4f}")
-    
+
+    # Si nous avons des résultats avec la structure plate
+    if flat_results:
+        best_flat_speed = min(flat_results,
+                             key=lambda x: x['results']['avg_total_time'])
+        best_flat_recall = max(flat_results,
+                              key=lambda x: x['results']['avg_recall'])
+
+        print("\n🏆 Meilleur avec STRUCTURE PLATE :")
+        print(f"  Vitesse maximale : {best_flat_speed['params']}")
+        print(f"    - Mode : {best_flat_speed['search_type']}")
+        print(f"    - Temps : {best_flat_speed['results']['avg_total_time']*1000:.2f}ms")
+        print(f"    - Recall : {best_flat_speed['results']['avg_recall']:.4f}")
+        print(f"  Recall maximal : {best_flat_recall['params']}")
+        print(f"    - Mode : {best_flat_recall['search_type']}")
+        print(f"    - Temps : {best_flat_recall['results']['avg_total_time']*1000:.2f}ms")
+        print(f"    - Recall : {best_flat_recall['results']['avg_recall']:.4f}")
+
     # Meilleur compromis (score = recall / temps)
     all_configs = []
     for r in results:
         score = r['results']['avg_recall'] / r['results']['avg_total_time']
         all_configs.append((
-            r['search_type'], 
-            r['params'], 
-            score, 
-            r['results']['avg_recall'], 
-            r['results']['avg_total_time']
+            r['search_type'],
+            r['params'],
+            score,
+            r['results']['avg_recall'],
+            r['results']['avg_total_time'],
+            r.get('use_flat_tree', False)
         ))
-    
+
     best_compromise = max(all_configs, key=lambda x: x[2])
-    print(f"\n🏆 Meilleur compromis (recall/temps) :")
+    flat_status = "structure plate" if best_compromise[5] else "structure standard"
+    print(f"\n🏆 Meilleur compromis (recall/temps) - {flat_status} :")
     print(f"  Mode : {best_compromise[0]}")
     print(f"  Params : {best_compromise[1]}")
     print(f"  Recall : {best_compromise[3]:.4f}")
     print(f"  Temps : {best_compromise[4]*1000:.2f}ms")
     print(f"  Score : {best_compromise[2]:.2f}")
+
+    # Repérer les configurations atteignant un recall de 1.0 (100%)
+    perfect_recall_configs = [r for r in results if r['results']['avg_recall'] >= 0.999]
+    if perfect_recall_configs:
+        fastest_perfect = min(perfect_recall_configs, key=lambda x: x['results']['avg_total_time'])
+        flat_status = "structure plate" if fastest_perfect.get('use_flat_tree', False) else "structure standard"
+        print(f"\n🏆 Configuration la plus rapide avec recall parfait (>= 0.999) - {flat_status} :")
+        print(f"  Mode : {fastest_perfect['search_type']}")
+        print(f"  Params : {fastest_perfect['params']}")
+        print(f"  Recall : {fastest_perfect['results']['avg_recall']:.4f}")
+        print(f"  Temps : {fastest_perfect['results']['avg_total_time']*1000:.2f}ms")
     
     # Créer un graphique des résultats
     try:
@@ -224,22 +279,29 @@ def analyze_results(results: List[Dict]):
         plt.figure(figsize=(14, 10))
         
         # Couleurs par max_data
-        colors = {200: 'blue', 500: 'green', 1000: 'red', 2000: 'orange'}
-        
+        colors = {100: 'blue', 200: 'green', 300: 'cyan', 400: 'red', 500: 'orange', 1000: 'purple', 2000: 'brown'}
+
         # Deux sous-graphiques
         plt.subplot(2, 1, 1)
-        
+
         # Graphique principal : vitesse vs recall
         for r in results:
             color = colors.get(r['params']['max_data'], 'black')
-            marker = 'o' if r['search_type'] == 'single' else 's'
-            
+
+            # Différencier structure plate et standard
+            use_flat = r.get('use_flat_tree', False)
+            if r['search_type'] == 'single':
+                marker = 'o' if use_flat else '^'
+            else:
+                marker = 's' if use_flat else 'd'
+
             label = f"{r['search_type']}, max_data={r['params']['max_data']}"
             if r['search_type'] == 'beam':
-                label += f", width={r['params']['beam_width']}"
-            
-            plt.scatter(r['results']['avg_total_time']*1000, 
-                       r['results']['avg_recall'], 
+                label += f", width={r['params'].get('beam_width', '?')}"
+            label += f", flat={use_flat}"
+
+            plt.scatter(r['results']['avg_total_time']*1000,
+                       r['results']['avg_recall'],
                        c=color,
                        marker=marker,
                        s=100,

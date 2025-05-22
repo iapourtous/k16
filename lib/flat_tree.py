@@ -5,9 +5,12 @@ Structure recommandée par défaut pour les performances optimales.
 """
 
 import numpy as np
-from typing import List, Tuple, Optional, Dict, Any, Union
+from typing import Optional, Dict, Any, TYPE_CHECKING
 
 from .tree import TreeNode, K16Tree
+
+if TYPE_CHECKING:
+    from .io import VectorReader
 
 class TreeFlat:
     """
@@ -17,7 +20,6 @@ class TreeFlat:
     - Localité mémoire (meilleure utilisation du cache)
     - Opérations vectorisées sur les centroïdes
     - Accès directs sans indirection
-    - Support d'opérations binaires optimisées
     """
     
     def __init__(self, dims: int, max_depth: int):
@@ -40,9 +42,6 @@ class TreeFlat:
         self.leaf_offset = None       # np.ndarray de forme (nb_total_nodes,) avec -1 pour nœuds internes
         self.leaf_data = None         # np.ndarray contenant tous les indices des vecteurs des feuilles
         self.leaf_bounds = None       # np.ndarray de forme (n_leaves+1,) indiquant les offsets dans leaf_data
-        
-        # Stockage binaire des centroïdes pour comparaisons rapides (optionnel)
-        self.binary_centroids = []    # Liste de np.ndarray par niveau, pour comparaisons binaires
         
         # Statistiques
         self.n_nodes = 0              # Nombre total de nœuds
@@ -170,55 +169,10 @@ class TreeFlat:
         flat_tree.n_levels = max_depth
         flat_tree.depth = max_depth - 1
         
-        # Ajouter les représentations binaires des centroïdes (si nécessaire)
-        flat_tree.add_binary_centroids()
-        
+        # Aucune représentation binaire : la recherche s'effectue uniquement
+        # avec les centroïdes float32.
         return flat_tree
     
-    def add_binary_centroids(self, n_bits: int = 256) -> None:
-        """
-        Génère des représentations binaires des centroïdes pour accélérer la recherche.
-        Utilise une technique de quantization pour convertir les vecteurs flottants
-        en représentations binaires pour calcul de distance rapide.
-        
-        Args:
-            n_bits: Nombre de bits à utiliser pour la représentation binaire
-        """
-        # Vider la liste existante
-        self.binary_centroids = []
-        
-        # Pour chaque niveau, générer des représentations binaires
-        for level, level_centroids in enumerate(self.centroids):
-            n_vecs = level_centroids.shape[0]
-            
-            # Nous allons utiliser des uint64 pour stocker les bits
-            n_words = (n_bits + 63) // 64
-            binary = np.zeros((n_vecs, n_words), dtype=np.uint64)
-            
-            # Convertir chaque centroïde en représentation binaire
-            for i, centroid in enumerate(level_centroids):
-                # Technique simple : convertir les composantes positives en 1, négatives en 0
-                for bit in range(min(n_bits, centroid.shape[0])):
-                    word_idx = bit // 64
-                    bit_idx = bit % 64
-                    if centroid[bit % centroid.shape[0]] > 0:
-                        binary[i, word_idx] |= (1 << bit_idx)
-            
-            self.binary_centroids.append(binary)
-    
-    def hamming_distance(self, vec1: np.ndarray, vec2: np.ndarray) -> int:
-        """
-        Calcule la distance de Hamming entre deux vecteurs binaires.
-        
-        Args:
-            vec1: Premier vecteur binaire
-            vec2: Deuxième vecteur binaire
-        
-        Returns:
-            int: Distance de Hamming (nombre de bits différents)
-        """
-        # XOR des bits puis comptage des bits à 1 (popcount)
-        return np.sum(np.unpackbits(np.bitwise_xor(vec1.view(np.uint8), vec2.view(np.uint8))))
     
     def search_tree_single(self, query: np.ndarray) -> np.ndarray:
         """
@@ -242,38 +196,23 @@ class TreeFlat:
             if level_centroids.shape[0] <= node_idx:
                 break
                 
-            # Utiliser les représentations binaires pour une comparaison rapide
-            if self.binary_centroids:  # Activer pour optimiser les performances
-                # Convertir la requête en binaire (même méthode que dans add_binary_centroids)
-                bin_query = np.zeros(self.binary_centroids[level].shape[1], dtype=np.uint64)
-                for bit in range(min(256, query.shape[0])):
-                    word_idx = bit // 64
-                    bit_idx = bit % 64
-                    if query[bit % query.shape[0]] > 0:
-                        bin_query[word_idx] |= (1 << bit_idx)
+            # Approche classique par similarité cosinus (produit scalaire)
+            if self.child_ptr[level].shape[0] <= node_idx:
+                break
 
-                # Calculer la distance de Hamming avec tous les centroïdes
-                # Note: plus la distance est faible, plus la similarité est élevée
-                distances = np.array([self.hamming_distance(bin_query, c) for c in self.binary_centroids[level]])
-                best_child_idx = np.argmin(distances)
-            else:
-                # Approche classique par similarité cosinus (produit scalaire)
-                if self.child_ptr[level].shape[0] <= node_idx:
-                    break
-                
-                children_ptr = self.child_ptr[level][node_idx]
-                valid_children = children_ptr[children_ptr >= 0]
-                
-                if len(valid_children) == 0:
-                    break
-                
-                # Calculer les similarités avec les centroïdes des enfants valides
-                child_centroids = np.array([self.centroids[level + 1][idx] for idx in valid_children])
-                similarities = np.dot(child_centroids, query)
-                
-                # Trouver le meilleur enfant
-                best_idx = np.argmax(similarities)
-                node_idx = valid_children[best_idx]
+            children_ptr = self.child_ptr[level][node_idx]
+            valid_children = children_ptr[children_ptr >= 0]
+
+            if len(valid_children) == 0:
+                break
+
+            # Calculer les similarités avec les centroïdes des enfants valides
+            child_centroids = np.array([self.centroids[level + 1][idx] for idx in valid_children])
+            similarities = np.dot(child_centroids, query)
+
+            # Trouver le meilleur enfant
+            best_idx = np.argmax(similarities)
+            node_idx = valid_children[best_idx]
             
             # Passer au niveau suivant
             level += 1
@@ -375,21 +314,67 @@ class TreeFlat:
         # Éliminer les doublons et retourner
         return np.array(list(set(all_indices)), dtype=np.int32)
     
-    def search_tree(self, query: np.ndarray, beam_width: int = 1) -> np.ndarray:
+    def search_tree(
+        self,
+        query: np.ndarray,
+        beam_width: int = 1,
+        vectors_reader: Optional['VectorReader'] = None,
+        k: Optional[int] = None,
+    ) -> np.ndarray:
         """
-        Recherche dans l'arbre plat avec l'algorithme approprié.
-        
+        Recherche dans l'arbre plat et, si un ``VectorReader`` est fourni, trie
+        automatiquement les candidats par similarité (produit scalaire) et
+        retourne éventuellement les ``k`` meilleurs.
+
+        Cette signature reste rétro-compatible : les appels existants qui ne
+        fournissent que ``query`` et ``beam_width`` conservent l'ancien
+        comportement (ensemble non trié).
+
         Args:
-            query: Vecteur requête normalisé
-            beam_width: Largeur du faisceau (1=single)
-            
-        Returns:
-            np.ndarray: Tableau des indices des vecteurs les plus proches
+            query: Vecteur requête normalisé (float32, norme ≈ 1).
+            beam_width: Largeur du faisceau (``1`` = single path).
+            vectors_reader: Instance de ``VectorReader`` permettant de récupérer
+                les vecteurs bruts pour calculer les similarités.  Si ``None``
+                (par défaut), aucun tri n'est effectué — on renvoie simplement
+                l'ensemble de candidats comme auparavant.
+            k: Nombre maximum de résultats à retourner après tri.  Ignoré si
+                ``vectors_reader`` est ``None``.
+
+        Returns
+        -------
+        np.ndarray
+            Tableau d'indices, éventuellement trié et tronqué à ``k`` éléments.
         """
+
+        # 1) Récupération de l'ensemble de candidats non trié (comportement
+        #    historique).
         if beam_width <= 1:
-            return self.search_tree_single(query)
+            candidates = self.search_tree_single(query)
         else:
-            return self.search_tree_beam(query, beam_width)
+            candidates = self.search_tree_beam(query, beam_width)
+
+        # 2) Tri optionnel si l'on dispose des vecteurs.
+        if vectors_reader is not None and len(candidates) > 0:
+            # Calcul des similarités cosinus via produit scalaire (les vecteurs
+            # d'entrée sont supposés normalisés).
+            similarities = vectors_reader.dot(candidates, query)
+
+            # Si k est fourni et plus petit que le nombre total de candidats,
+            # utiliser argpartition (O(n)) plutôt que argsort (O(n log n)) pour
+            # extraire rapidement les k meilleurs, puis trier uniquement ces k.
+            if k is not None and 0 < k < len(candidates):
+                # Obtenir les k indices locaux (pas encore triés) des plus grandes valeurs
+                top_k_local = np.argpartition(-similarities, k - 1)[:k]
+
+                # Trier ces k indices selon la similarité décroissante
+                top_k_sorted = top_k_local[np.argsort(-similarities[top_k_local])]
+                candidates = np.array([candidates[i] for i in top_k_sorted], dtype=np.int32)
+            else:
+                # k absent ou supérieur : trier entièrement (petit coût si n modéré)
+                sorted_local_idx = np.argsort(-similarities)
+                candidates = np.array([candidates[i] for i in sorted_local_idx], dtype=np.int32)
+
+        return candidates
     
     def save(self, file_path: str) -> None:
         """
@@ -410,8 +395,7 @@ class TreeFlat:
             'child_ptr': self.child_ptr,
             'leaf_offset': self.leaf_offset,
             'leaf_data': self.leaf_data,
-            'leaf_bounds': self.leaf_bounds,
-            'binary_centroids': self.binary_centroids
+            'leaf_bounds': self.leaf_bounds
         }
         
         # Sauvegarder avec numpy
@@ -444,7 +428,6 @@ class TreeFlat:
         tree.leaf_offset = data['leaf_offset']
         tree.leaf_data = data['leaf_data']
         tree.leaf_bounds = data['leaf_bounds']
-        tree.binary_centroids = data['binary_centroids']
         
         return tree
     
@@ -460,9 +443,7 @@ class TreeFlat:
             "n_leaves": self.n_leaves,
             "max_depth": self.depth,
             "n_levels": self.n_levels,
-            "nodes_per_level": [len(nodes) for nodes in self.nodes_by_level],
-            "binary_representation": len(self.binary_centroids) > 0,
-            "binary_bits": 256 if len(self.binary_centroids) > 0 else 0
+            "nodes_per_level": [len(nodes) for nodes in self.nodes_by_level]
         }
         
         # Si nous avons des feuilles, calculer la taille moyenne et totale

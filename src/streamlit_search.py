@@ -41,9 +41,17 @@ def load_resources():
     with st.spinner("Chargement des vecteurs..."):
         vectors_reader = VectorReader(vectors_path, mode="ram")
     
-    # Charger l'arbre
+    # Charger l'arbre avec structure plate optimisée
     with st.spinner("Chargement de l'arbre de recherche..."):
-        tree, _ = TreeIO.load_tree(tree_path)
+        tree_io = TreeIO()
+        # Utiliser la structure plate optimisée
+        k16tree = tree_io.load_as_k16tree(tree_path, use_flat_structure=True)
+
+        # Vérifier si la conversion a réussi
+        if hasattr(k16tree, 'flat_tree') and k16tree.flat_tree is not None:
+            st.success("✓ Structure plate optimisée chargée avec succès!")
+        else:
+            st.warning("⚠️ Utilisation de l'arbre standard (structure plate non disponible)")
     
     # Charger les textes
     with st.spinner("Chargement des questions et réponses..."):
@@ -53,25 +61,56 @@ def load_resources():
     # Créer le chercheur avec les paramètres de configuration
     search_config = config_manager.get_section("search")
     searcher = Searcher(
-        tree,
+        k16tree,  # Utiliser l'arbre avec structure plate
         vectors_reader,
         use_faiss=True,
-        search_type=search_config.get("search_type", "single"),
-        beam_width=search_config.get("beam_width", 3)
+        search_type=search_config.get("search_type", "beam"),  # Utiliser beam search par défaut
+        beam_width=search_config.get("beam_width", 2)  # Beam width optimisé par défaut
     )
     
     return model, searcher, qa_lines, config_manager
 
 def search_similar_questions(query, model, searcher, qa_lines, k=10):
-    """Recherche les questions similaires"""
+    """Recherche les questions similaires avec métriques détaillées"""
+    # Mesures de temps
+    timings = {}
+
     # Encoder la requête
+    encode_start = time.time()
     query_vector = model.encode(f"query: {query}", normalize_embeddings=True)
-    
+    timings["encode"] = time.time() - encode_start
+
     # Rechercher les k plus proches voisins
-    start_time = time.time()
-    indices = searcher.search_k_nearest(query_vector, k=k)
-    search_time = time.time() - start_time
-    
+    search_start = time.time()
+
+    # Si on a une structure plate, on peut mesurer séparément le temps de tree_search et filter
+    has_flat = hasattr(searcher, 'k16tree') and hasattr(searcher.k16tree, 'flat_tree') and searcher.k16tree.flat_tree is not None
+
+    # Effectuer la recherche
+    if has_flat and searcher.search_type == "beam":
+        # Utiliser directement la structure plate pour optimiser
+        tree_search_start = time.time()
+        flat_tree = searcher.k16tree.flat_tree
+
+        # Utiliser la nouvelle capacité de tri intégré de TreeFlat.
+        candidates = flat_tree.search_tree(
+            query_vector,
+            searcher.beam_width,
+            vectors_reader=searcher.vectors_reader,
+            k=k,
+        )
+
+        timings["tree_search"] = time.time() - tree_search_start
+        indices = candidates  # Déjà triés et limités à k
+        timings["filter"] = 0  # Plus de filtrage additionnel
+    else:
+        # Recherche standard
+        indices = searcher.search_k_nearest(query_vector, k=k)
+        timings["tree_search"] = time.time() - search_start
+        timings["filter"] = 0  # Inclus dans tree_search
+
+    search_time = time.time() - search_start
+
     # Récupérer les résultats
     results = []
     for idx in indices:
@@ -84,8 +123,12 @@ def search_similar_questions(query, model, searcher, qa_lines, k=10):
                     "answer": answer,
                     "index": idx
                 })
-    
-    return results, search_time
+
+    # Calculer le temps total
+    total_time = timings["encode"] + search_time
+
+    # Retourner les résultats et les métriques
+    return results, total_time, timings
 
 # Configuration de la page
 st.set_page_config(
@@ -130,7 +173,23 @@ with st.sidebar:
     
     # Mode de recherche
     st.header("🔎 Mode")
-    st.success("Recherche avec arbre K16")
+
+    # Vérifier si la structure plate est utilisée
+    if hasattr(searcher, 'k16tree') and hasattr(searcher.k16tree, 'flat_tree') and searcher.k16tree.flat_tree is not None:
+        flat_tree = searcher.k16tree.flat_tree
+        st.success(f"🚀 Recherche optimisée avec structure plate\n- Mode: {searcher.search_type}\n- Beam width: {searcher.beam_width}")
+
+        # Afficher les statistiques de l'arbre plat
+        stats = flat_tree.get_statistics()
+        st.info(f"""
+        **Structure plate**
+        - Noeuds: {stats.get('n_nodes', '?')}
+        - Feuilles: {stats.get('n_leaves', '?')}
+        - Profondeur: {stats.get('max_depth', '?')}
+        - Taille moy. feuilles: {stats.get('avg_leaf_size', '?'):.1f}
+        """)
+    else:
+        st.warning(f"Recherche standard avec arbre K16\n- Mode: {searcher.search_type}")
 
 # Zone de recherche principale
 with st.form(key="search_form"):
@@ -148,11 +207,28 @@ with st.form(key="search_form"):
 # Effectuer la recherche
 if search_button and query:
     with st.spinner("Recherche en cours..."):
-        results, search_time = search_similar_questions(query, model, searcher, qa_lines, k=k)
-    
-    # Afficher le temps de recherche
-    st.success(f"✅ Recherche terminée en **{search_time*1000:.2f} ms**")
-    
+        results, total_time, timings = search_similar_questions(query, model, searcher, qa_lines, k=k)
+
+    # Afficher le temps de recherche avec un résumé
+    col1, col2 = st.columns(2)
+    with col1:
+        st.success(f"✅ Recherche terminée en **{total_time*1000:.2f} ms**")
+    with col2:
+        has_flat = hasattr(searcher, 'k16tree') and hasattr(searcher.k16tree, 'flat_tree') and searcher.k16tree.flat_tree is not None
+        structure_label = "Structure plate optimisée" if has_flat else "Structure standard"
+        st.info(f"{structure_label} • {len(results)} résultats")
+
+    # Afficher les métriques détaillées
+    with st.expander("📊 Métriques détaillées"):
+        metrics_cols = st.columns(3)
+        with metrics_cols[0]:
+            st.metric("Encodage", f"{timings['encode']*1000:.2f} ms")
+        with metrics_cols[1]:
+            st.metric("Recherche arbre", f"{timings['tree_search']*1000:.2f} ms")
+        with metrics_cols[2]:
+            search_only = total_time - timings['encode']
+            st.metric("Recherche totale", f"{search_only*1000:.2f} ms")
+
     # Afficher les résultats
     if results:
         st.markdown("### 📋 Résultats")
