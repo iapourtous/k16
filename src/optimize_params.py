@@ -44,7 +44,9 @@ def test_tree_configuration(params: Dict, vectors_reader: VectorReader,
         max_leaf_size=params['max_leaf_size'],
         max_data=params['max_data'],
         max_workers=12,
-        use_gpu=True
+        use_gpu=True,
+        use_pca=True,  # Activer PCA par défaut
+        max_dims=200
     )
 
     build_time = time.time() - build_start
@@ -59,8 +61,8 @@ def test_tree_configuration(params: Dict, vectors_reader: VectorReader,
     if use_flat_tree:
         print("  🔨 Conversion en structure plate optimisée...")
         flat_start = time.time()
-        from lib.flat_tree import TreeFlat
-        flat_tree = TreeFlat.from_tree(k16tree)
+        from lib.flat_tree import TreeFlatPCA
+        flat_tree = TreeFlatPCA.from_tree(k16tree)
         k16tree.flat_tree = flat_tree
         flat_time = time.time() - flat_start
         print(f"  ✓ Structure plate générée en {flat_time:.2f}s")

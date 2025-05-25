@@ -10,12 +10,7 @@ import multiprocessing
 from joblib import Parallel, delayed
 from tqdm.auto import tqdm
 
-try:
-    import faiss
-    FAISS_AVAILABLE = True
-except ImportError:
-    FAISS_AVAILABLE = False
-    print("⚠️ FAISS n'est pas installé. K-means utilisera une implémentation plus lente.")
+import faiss
 
 try:
     from kneed import KneeLocator
@@ -58,8 +53,6 @@ def kmeans_faiss(vectors: np.ndarray, k: int, gpu: bool = False, niter: int = 25
     requested_k = k  # Conserver la valeur initiale
     if k > n:
         k = n
-
-    if FAISS_AVAILABLE:
         # Initialisation K-means++ pour une meilleure convergence
         centroids = spherical_kmeans_plusplus(vectors, k)
 
@@ -210,75 +203,42 @@ def spherical_kmeans_plusplus(vectors: np.ndarray, k: int) -> np.ndarray:
     # Choisir le premier centroïde aléatoirement
     centroids[0] = vectors[np.random.randint(0, n)]
 
-    # Si FAISS est disponible, l'utiliser pour accélérer
-    if FAISS_AVAILABLE:
-        index = faiss.IndexFlatIP(d)
+    # Utiliser FAISS pour accélérer
+    index = faiss.IndexFlatIP(d)
 
-        for i in range(1, k):
-            # Calculer les distances au centroïde le plus proche
-            index.reset()
-            index.add(centroids[:i])
-            similarities, _ = index.search(vectors, 1)
+    for i in range(1, k):
+        # Calculer les distances au centroïde le plus proche
+        index.reset()
+        index.add(centroids[:i])
+        similarities, _ = index.search(vectors, 1)
 
-            # Convertir similarités en distances angulaires
-            similarities = np.clip(similarities.reshape(-1), -1, 1)
-            angular_distances = np.arccos(similarities)
+        # Convertir similarités en distances angulaires
+        similarities = np.clip(similarities.reshape(-1), -1, 1)
+        angular_distances = np.arccos(similarities)
 
-            # Probabilité proportionnelle au carré de la distance
-            probabilities = angular_distances ** 2
-            # Éviter la division par zéro si toutes les distances sont nulles
-            if np.sum(probabilities) > 0:
-                probabilities = probabilities / np.sum(probabilities)
-            else:
-                # Si toutes les distances sont nulles, choisir uniformément
-                probabilities = np.ones(n) / n
+        # Probabilité proportionnelle au carré de la distance
+        probabilities = angular_distances ** 2
+        # Éviter la division par zéro si toutes les distances sont nulles
+        if np.sum(probabilities) > 0:
+            probabilities = probabilities / np.sum(probabilities)
+        else:
+            # Si toutes les distances sont nulles, choisir uniformément
+            probabilities = np.ones(n) / n
 
-            # Sélectionner le prochain centroïde
-            cumulative_probs = np.cumsum(probabilities)
-            r = np.random.rand()
+        # Sélectionner le prochain centroïde
+        cumulative_probs = np.cumsum(probabilities)
+        r = np.random.rand()
 
-            # S'assurer que l'indice est valide
-            if cumulative_probs[-1] > 0:
-                idx = np.searchsorted(cumulative_probs, r)
-                if idx >= n:  # Pour éviter les erreurs d'indexation
-                    idx = n - 1
-            else:
-                # En cas de problème avec les probabilités, choisir un indice aléatoire
-                idx = np.random.randint(0, n)
+        # S'assurer que l'indice est valide
+        if cumulative_probs[-1] > 0:
+            idx = np.searchsorted(cumulative_probs, r)
+            if idx >= n:  # Pour éviter les erreurs d'indexation
+                idx = n - 1
+        else:
+            # En cas de problème avec les probabilités, choisir un indice aléatoire
+            idx = np.random.randint(0, n)
 
-            centroids[i] = vectors[idx]
-    else:
-        # Version sans FAISS
-        for i in range(1, k):
-            # Calculer les distances au centroïde le plus proche
-            min_distances = np.ones(n) * float('inf')
-            for j in range(i):
-                similarities = np.dot(vectors, centroids[j])
-                angular_distances = np.arccos(np.clip(similarities, -1, 1))
-                min_distances = np.minimum(min_distances, angular_distances)
-
-            # Probabilité proportionnelle au carré de la distance
-            probabilities = min_distances ** 2
-            # Éviter la division par zéro
-            if np.sum(probabilities) > 0:
-                probabilities = probabilities / np.sum(probabilities)
-            else:
-                probabilities = np.ones(n) / n
-
-            # Sélectionner le prochain centroïde
-            cumulative_probs = np.cumsum(probabilities)
-            r = np.random.rand()
-
-            # S'assurer que l'indice est valide
-            if cumulative_probs[-1] > 0:
-                idx = np.searchsorted(cumulative_probs, r)
-                if idx >= n:  # Pour éviter les erreurs d'indexation
-                    idx = n - 1
-            else:
-                # En cas de problème, choisir aléatoirement
-                idx = np.random.randint(0, n)
-
-            centroids[i] = vectors[idx]
+        centroids[i] = vectors[idx]
 
     return centroids
 
@@ -674,7 +634,7 @@ def build_tree(vectors: np.ndarray, max_depth: int = 6, k: int = 16, k_adaptive:
         max_workers = multiprocessing.cpu_count()
 
     # Vérifier si le GPU est vraiment disponible
-    gpu_available = use_gpu and FAISS_AVAILABLE and hasattr(faiss, "get_num_gpus") and faiss.get_num_gpus() > 0
+    gpu_available = use_gpu and hasattr(faiss, "get_num_gpus") and faiss.get_num_gpus() > 0
     if use_gpu and not gpu_available:
         print("⚠️ GPU demandé mais non disponible. Utilisation du CPU à la place.")
         use_gpu = False

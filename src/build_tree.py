@@ -66,8 +66,6 @@ def main():
                         help=f"Nombre maximum de processus parallèles (par défaut: {build_config['max_workers']})")
     parser.add_argument("--gpu", action="store_true", default=build_config["use_gpu"],
                         help="Utiliser le GPU pour K-means si disponible")
-    parser.add_argument("--mmap-tree", action="store_true", default=False,
-                        help="Sauvegarder la structure plate en format répertoire pour 'mmap+' (memory-mapping de l'arbre)")
     
     args = parser.parse_args()
     
@@ -112,12 +110,8 @@ def main():
         from lib.tree import K16Tree
         k16tree = K16Tree(tree)
         flat_tree = TreeFlat.from_tree(k16tree)
-        if args.mmap_tree:
-            flat_tree.save(flat_path, mmap_dir=True)
-            print(f"✓ Structure plate sauvegardée vers {os.path.splitext(flat_path)[0]}/")
-        else:
-            flat_tree.save(flat_path)
-            print(f"✓ Structure plate sauvegardée vers {flat_path}")
+        flat_tree.save(flat_path)
+        print(f"✓ Structure plate sauvegardée vers {flat_path}")
 
         total_time = time.time() - total_start_time
         print("\n✓ Construction de l'arbre optimisé terminée.")

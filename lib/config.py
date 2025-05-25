@@ -32,9 +32,6 @@ DEFAULT_CONFIG = {
         "cache_size_mb": 500,
         "use_faiss": True
     },
-    "flat_tree": {
-        "head_dims": 64  # Nombre de dimensions à forte variance conservées telles quelles
-    },
     "prepare_data": {
         "model": "intfloat/multilingual-e5-large",
         "batch_size": 128,

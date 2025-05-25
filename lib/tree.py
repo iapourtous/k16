@@ -4,7 +4,7 @@ Définit les différentes classes pour représenter l'arbre K16.
 """
 
 import numpy as np
-from typing import List, Any, Optional, Dict, Tuple, Union
+from typing import List, Any, Optional, Dict, Union
 
 class TreeNode:
     """

@@ -96,3 +96,4 @@ temp/
 # System files
 Thumbs.db
 .directory
+**/.claude/settings.local.json

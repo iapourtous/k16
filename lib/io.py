@@ -16,15 +16,6 @@ from collections import OrderedDict
 from .tree import TreeNode, K16Tree
 from .config import ConfigManager
 
-# Unpickler personnalisé pour gérer les anciennes instances de TreeNode
-class CustomUnpickler(pickle.Unpickler):
-    def find_class(self, module, name):
-        # Redirige les anciennes références TreeNode vers notre nouveau module
-        if name == 'TreeNode' and module == '__main__':
-            from lib.tree import TreeNode
-            return TreeNode
-        return super().find_class(module, name)
-
 class VectorWriter:
     """Classe pour écrire des vecteurs dans un fichier binaire."""
     
@@ -75,8 +66,8 @@ class VectorReader:
         self.file_path = file_path
         self.mode = mode.lower()
         
-        if self.mode not in ["ram", "mmap", "mmap+"]:
-            raise ValueError("Mode doit être 'ram', 'mmap' ou 'mmap+'")
+        if self.mode not in ["ram", "mmap"]:
+            raise ValueError("Mode doit être 'ram', 'mmap'")
         
         # Paramètres des vecteurs
         self.n = 0  # Nombre de vecteurs
@@ -382,101 +373,6 @@ class VectorReader:
 
 class TreeIO:
     """Classe pour la lecture et l'écriture d'arbres K16."""
-    
-    @staticmethod
-    def save_tree(tree: Union[TreeNode, K16Tree], file_path: str, save_flat: bool = True) -> None:
-        """
-        Sauvegarde un arbre dans un fichier binaire.
-        Peut optionnellement sauvegarder une version plate optimisée.
-
-        Args:
-            tree: Arbre K16 ou nœud racine à sauvegarder
-            file_path: Chemin du fichier de sortie
-            save_flat: Si True, sauvegarde également une version plate optimisée
-        """
-        start_time = time.time()
-        print(f"⏳ Sauvegarde de l'arbre vers {file_path}...")
-
-        # Créer le répertoire si nécessaire
-        os.makedirs(os.path.dirname(os.path.abspath(file_path)), exist_ok=True)
-
-        # Si on reçoit un K16Tree, extraire la racine
-        if isinstance(tree, K16Tree):
-            root = tree.root
-            flat_tree = tree.flat_tree
-        else:
-            root = tree
-            flat_tree = None
-
-        # Sauvegarder la structure hiérarchique standard
-        with open(file_path, "wb") as f:
-            pickle.dump(root, f)
-
-        tree_elapsed = time.time() - start_time
-        print(f"✓ Arbre standard sauvegardé vers {file_path} en {tree_elapsed:.2f}s")
-
-        # Sauvegarder également une version plate optimisée si demandé
-        if save_flat:
-            flat_path = file_path
-            if not (flat_path.endswith('.flat.npy') or flat_path.endswith('.flat')):
-                # Remplacer l'extension si elle existe, sinon ajouter .flat.npy
-                if '.' in os.path.basename(flat_path):
-                    flat_path = os.path.splitext(flat_path)[0] + '.flat.npy'
-                else:
-                    flat_path = flat_path + '.flat.npy'
-
-            if flat_tree is None:
-                # Créer une structure plate si elle n'existe pas déjà
-                print(f"⏳ Conversion en structure plate optimisée...")
-                flat_start = time.time()
-                try:
-                    from .flat_tree import TreeFlat
-                    k16tree = K16Tree(root) if not isinstance(tree, K16Tree) else tree
-                    flat_tree = TreeFlat.from_tree(k16tree)
-                    flat_elapsed = time.time() - flat_start
-                    print(f"✓ Arbre converti en structure plate en {flat_elapsed:.2f}s")
-                except ImportError:
-                    print("⚠️ Module TreeFlat non trouvé. Structure plate non sauvegardée.")
-                    return
-
-            # Sauvegarder la structure plate
-            print(f"⏳ Sauvegarde de la structure plate vers {flat_path}...")
-            flat_save_start = time.time()
-            flat_tree.save(flat_path)
-            flat_save_elapsed = time.time() - flat_save_start
-            print(f"✓ Structure plate sauvegardée vers {flat_path} en {flat_save_elapsed:.2f}s")
-
-        total_elapsed = time.time() - start_time
-        print(f"✓ Sauvegarde terminée en {total_elapsed:.2f}s")
-    
-    @staticmethod
-    def load_tree(file_path: str) -> Tuple[TreeNode, float]:
-        """
-        Charge un arbre depuis un fichier binaire.
-
-        Args:
-            file_path: Chemin du fichier contenant l'arbre
-
-        Returns:
-            Tuple[TreeNode, float]: L'arbre chargé et le temps d'exécution
-        """
-        start_time = time.time()
-        print(f"⏳ Chargement de l'arbre depuis {file_path}...")
-
-        try:
-            with open(file_path, "rb") as f:
-                # Use our custom unpickler to handle legacy TreeNode objects
-                unpickler = CustomUnpickler(f)
-                tree = unpickler.load()
-
-            elapsed = time.time() - start_time
-            print(f"✓ Arbre chargé depuis {file_path} en {elapsed:.2f}s")
-            return tree, elapsed
-        except Exception as e:
-            elapsed = time.time() - start_time
-            print(f"❌ Erreur lors du chargement de l'arbre: {str(e)}")
-            raise
-    
     @staticmethod
     def load_as_k16tree(file_path: str, mmap_tree: bool = False) -> K16Tree:
         """
