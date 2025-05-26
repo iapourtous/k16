@@ -1,21 +1,17 @@
-# 🚀 K16 Search - Recherche Ultra-Rapide par Similarité avec PCA
+# 🚀 K16 Search - Recherche Ultra-Rapide par Similarité
 
 <p align="center">
   <img src="https://img.shields.io/badge/Python-3.8+-blue.svg" alt="Python">
   <img src="https://img.shields.io/badge/Performance-266x_faster-green.svg" alt="Performance">
   <img src="https://img.shields.io/badge/Recall-91.50%25-brightgreen.svg" alt="Recall">
-  <img src="https://img.shields.io/badge/PCA-Adaptive-orange.svg" alt="PCA">
-  <img src="https://img.shields.io/badge/JIT-Numba-red.svg" alt="JIT">
   <img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License">
 </p>
 
-**K16 Search** est un système de recherche par similarité ultra-performant basé sur un arbre de clustering hiérarchique avec **réduction PCA adaptative**. Conçu pour rechercher efficacement dans des millions de vecteurs d'embeddings, K16 offre :
+**K16 Search** est un système de recherche par similarité ultra-performant basé sur un arbre de clustering hiérarchique. Conçu pour rechercher efficacement dans des millions de vecteurs d'embeddings, K16 offre :
 
 - ⚡ **Accélération record de 266x** (0.29 ms pour 88 k vecteurs)
 - 🎯 **Recall de 91.5 %** avec la configuration équilibrée
-- 🧠 **PCA adaptative** pour une compression intelligente des dimensions
 - 🔧 **Outils d'optimisation** pour trouver vos paramètres parfaits
-- 🚀 **JIT Numba** pour des performances optimales
 
 🚀 **Alternative à HNSW** : Plus simple, plus léger et souvent plus rapide que les graphes HNSW (Hierarchical Navigable Small World), K16 offre un excellent compromis entre performance et simplicité d'implémentation.
 
@@ -23,21 +19,18 @@
 
 - 🏎️ **Ultra-rapide** : Jusqu'à **0.22 ms** pour interroger 88 k vecteurs (318× plus rapide qu'une recherche naïve)
 - 🎯 **Haute précision** : Jusqu'à **98.7 %** de recall avec moins de **1 ms** de latence
-- 🧠 **PCA intelligente** : Réduction adaptative des dimensions avec déduplication optimisée
-- 🚀 **JIT compilé** : Accélération Numba pour les opérations critiques
-- 🔧 **Flexible** : Deux modes de recherche, **TreeFlatPCA** optimisée, + Support RAM/mmap
+- 🔧 **Flexible** : Deux modes de recherche, **structure plate** optionnelle, + Support RAM/mmap
 - 💻 **Interface moderne** : Application Streamlit intuitive pour la recherche interactive
 - ⚡ **Optimisé** : Utilise FAISS pour l'accélération GPU/CPU et le clustering parallèle
 
 ## 🔬 Comment ça marche ?
 
-K16 utilise un **arbre k-aire adaptatif** avec **k-means sphérique et PCA** pour partitionner hiérarchiquement l'espace des embeddings :
+K16 utilise un **arbre k-aire adaptatif** avec **k-means sphérique** pour partitionner hiérarchiquement l'espace des embeddings :
 
-1. **PCA adaptative** : Réduction intelligente des dimensions à chaque niveau de l'arbre
-2. **K-means sphérique** : Clustering dans l'espace réduit adapté aux embeddings normalisés
-3. **Construction hiérarchique** : Les vecteurs sont organisés en clusters avec PCA partagée entre frères
-4. **Recherche JIT** : Descente compilée Numba avec transformations PCA en temps réel
-5. **Filtrage final** : Les candidats sont raffinés avec FAISS pour obtenir les k plus proches
+1. **K-means sphérique** : Clustering adapté aux embeddings normalisés (similarité cosinus)
+2. **Construction de l'arbre** : Les vecteurs sont organisés en clusters hiérarchiques cohérents
+3. **Recherche efficace** : Descente rapide dans l'arbre vers les feuilles pertinentes
+4. **Filtrage final** : Les candidats sont raffinés avec FAISS pour obtenir les k plus proches
 
 ### Architecture
 
@@ -53,7 +46,7 @@ K16 utilise un **arbre k-aire adaptatif** avec **k-means sphérique et PCA** pou
     Feuilles: contiennent les indices des vecteurs similaires
 ```
 
-## 📊 Performances (arbre **plat** `TreeFlatPCA`)
+## 📊 Performances (arbre **plat** `TreeFlat`)
 
 Les benchmarks ci-dessous proviennent directement du fichier `optimization_results.json` généré par
 `src/optimize_params.py` (100 requêtes aléatoires sur le dataset Natural Questions, 88 k
@@ -74,8 +67,7 @@ build_tree:
   max_depth: 32
   max_leaf_size: 5
   max_data: 100
-  use_pca: true
-  max_dims: 200
+  use_flat_tree: true
 
 search:
   search_type: "beam"
@@ -87,10 +79,10 @@ search:
 vs filtrage, etc.) sont stockés dans **`optimization_results.json`** pour une analyse
 approfondie ou une visualisation via `src/visualize_optimization.py`.
 
-## 🆕 Structure plate ultra-optimisée (`TreeFlatPCA`)
+## 🆕 Structure plate ultra-optimisée (`TreeFlat`)
 
 Depuis la version **0.6**, K16 propose une représentation *plate* de l’arbre
-(`TreeFlatPCA`) sauvegardée dans `models/tree.flat.npy`.  Contrairement à la
+(`TreeFlat`) sauvegardée dans `models/tree.flat.npy`.  Contrairement à la
 structure chaînée classique :
 
 1. Les centroïdes de chaque niveau sont stockés dans des tableaux **contigus**
@@ -106,10 +98,10 @@ recherche.
 
 ```python
 from lib.io import VectorReader
-from lib.flat_tree import TreeFlatPCA
+from lib.flat_tree import TreeFlat
 
 # Charger l’arbre plat
-flat = TreeFlatPCA.load('models/tree.flat.npy')
+flat = TreeFlat.load('models/tree.flat.npy')
 
 # Charger (éventuellement) les vecteurs pour réordonner les résultats
 reader = VectorReader('data/data.bin', mode='ram')
@@ -118,7 +110,7 @@ reader = VectorReader('data/data.bin', mode='ram')
 candidates = flat.search_tree(query_vector, beam_width=2, vectors_reader=reader, k=10)
 ```
 
-Le flag `use_pca: true` (voir config plus haut) permet de **construire**
+Le flag `use_flat_tree: true` (voir config plus haut) permet de **construire**
 directement ce format via `build_tree.py`.
 
 ## 🎯 Cas d'Usage
@@ -240,6 +232,7 @@ build_tree:
 
   use_gpu: true              # Utilise le GPU pour K-means (si disponible)
                              # Accélère significativement la construction
+  # Pour activer mmap+ (memory-mapping de l'arbre), exécutez build_tree.py avec --mmap-tree
 ```
 
 ### Paramètres de Recherche
@@ -255,6 +248,7 @@ search:
   mode: "ram"                # Mode de chargement des vecteurs
                              # - "ram" : charge tout en mémoire (plus rapide)
                              # - "mmap" : mapping mémoire (économise la RAM)
+                             # - "mmap+" : mapping mémoire des vecteurs et de la structure plate (économise davantage la RAM)
 
   cache_size_mb: 500         # Taille du cache LRU pour le mode mmap
                              # Plus grand = meilleures performances en mmap

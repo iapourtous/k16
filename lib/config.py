@@ -23,7 +23,8 @@ DEFAULT_CONFIG = {
         "max_leaf_size": 100,
         "max_data": 3000,
         "max_workers": 8,
-        "use_gpu": True
+        "use_gpu": True,
+        "perfect_recall": False
     },
     "search": {
         "k": 100,

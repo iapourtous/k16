@@ -1,42 +1,9 @@
 """
 Représentation plate compacte en mémoire d'un arbre K16 (*K16Tree*).
 
-Principaux points différenciants par rapport à l'implémentation précédente :
-
-1. Centroides compacts en mémoire
-   • Seules les `D_HEAD` dimensions présentant la plus forte variance globale
-     sont conservées explicitement (`centroids_head`).
-   • La partie restante est résumée par une unique valeur scalaire `tail_norm`
-     pour chaque centroïde (‖tail‖₂).
-
-2. Recherche exacte via élagage par borne supérieure
-   Lors de la descente de l'arbre, on calcule d'abord, pour chaque enfant, le
-   produit partiel optimisé :
-
-       dot_head = ⟨q_head, c_head⟩                  (0.25·D_HEAD FLOPs)
-
-   Sachant que la requête est normalisée L2 (hypothèse maintenue dans la
-   bibliothèque), le produit scalaire complet vérifie :
-
-       ⟨q, c⟩ = dot_head + ⟨q_tail, c_tail⟩
-              ≤ dot_head + ‖q_tail‖₂ · ‖c_tail‖₂
-
-   On définit donc une *borne supérieure* :
-
-       upper = dot_head + q_tail_norm * tail_norm
-
-   Seuls les enfants dont cette borne pourrait dépasser le meilleur score
-   actuel sont examinés de manière exacte. Pour limiter l'utilisation mémoire,
-   on choisit simplement l'enfant avec la plus grande *borne supérieure*.
-
-   En pratique, avec `D_HEAD` ≥ 64 pour des embeddings 256–1024-d,
-   le chemin choisi coïncide avec l'argmax exact à plus de 99,9 %,
-   tout en divisant par >10 l'empreinte mémoire.
-
-3. API inchangée
-   `TreeFlat.from_tree()` renvoie toujours un objet dont les méthodes
-   `search_tree_single` / `search_tree_beam` fonctionnent comme auparavant,
-   tout en profitant de l'optimisation partielle décrite ci-dessus.
+Cette version inclut les correctifs nécessaires pour que
+`TreeFlat.apply_perfect_recall()` garantisse un rappel de 100 % sans erreurs.
+Utilise une réduction de dimension locale par niveau.
 """
 
 from __future__ import annotations
@@ -56,20 +23,16 @@ if TYPE_CHECKING:  # uniquement pour les vérificateurs de types statiques
 class TreeFlat:
     """Représentation plate compacte en mémoire d'un arbre K16 (*K16Tree*)."""
 
-    # Number of dimensions kept verbatim in the *head* (tunable)
-    D_HEAD_DEFAULT = 128
-
     # ------------------------------------------------------------------
     # Construction helpers
     # ------------------------------------------------------------------
-    def __init__(self, dims: int, max_depth: int, d_head: int):
+    def __init__(self, dims: int, max_depth: int):
         self.dims = dims              # original embedding dimension
         self.depth = 0                # will be set after construction
         self.max_depth = max_depth
-        self.d_head = d_head
 
-        # Per-level structures
-        self.centroids_head: List[np.ndarray] = []   # list[level] → (n_nodes, d_head)
+        # Per-level structures (local dimensional reduction)
+        self.centroids_head: List[np.ndarray] = []   # list[level] → (n_nodes, d_head_level)
         self.tail_norms: List[np.ndarray] = []       # list[level] → (n_nodes,)
         self.child_ptr: List[np.ndarray] = []        # list[level] → (n_nodes, max_children) int32
 
@@ -86,14 +49,15 @@ class TreeFlat:
         # Mapping nodes per level (used for traversal & leaf mapping)
         self.nodes_by_level: List[List[TreeNode]] = []
 
-        # Top-variance dimensions kept in *head*
-        self.top_dims: Optional[np.ndarray] = None  # int32[D_HEAD]
+        # Top-variance dimensions kept in *head* per level (local)
+        self.top_dims_by_level: List[np.ndarray] = []  # list[level] → int32[d_head_level]
+        self.d_head_by_level: List[int] = []           # list[level] → d_head_level
 
     # ------------------------------------------------------------------
     # Factory from hierarchical tree
     # ------------------------------------------------------------------
     @classmethod
-    def from_tree(cls, tree: K16Tree, d_head: Optional[int] = None) -> "TreeFlat":
+    def from_tree(cls, tree: K16Tree) -> "TreeFlat":
         if not tree.root:
             raise ValueError("Empty source tree")
 
@@ -101,18 +65,19 @@ class TreeFlat:
         stats = tree.get_statistics()
         max_depth = stats["max_depth"] + 1  # include root level 0
 
-        if d_head is None:
-            # Retrieve value from YAML config if available
-            try:
-                from .config import ConfigManager  # local import to avoid cycle at module load
-                cm = ConfigManager()
-                cfg_val = cm.get("flat_tree", "head_dims", cls.D_HEAD_DEFAULT)
-            except Exception:
-                cfg_val = cls.D_HEAD_DEFAULT
+        # Use local dimensional reduction already computed in the tree
+        if tree.top_dims_by_level is None or tree.d_head_by_level is None:
+            raise ValueError("La réduction de dimension locale doit être calculée dans l'arbre avant l'aplatissement")
+        
+        top_dims_by_level = tree.top_dims_by_level
+        d_head_by_level = tree.d_head_by_level
+        print(f"✓ Utilisation de la réduction de dimension locale pré-calculée")
 
-            d_head = min(int(cfg_val), dims)
+        ft = cls(dims, max_depth)
 
-        ft = cls(dims, max_depth, d_head)
+        # Store dimensional reduction info
+        ft.top_dims_by_level = top_dims_by_level
+        ft.d_head_by_level = d_head_by_level
 
         # ------------------------------------------------------------------
         # Gather nodes per level
@@ -129,18 +94,6 @@ class TreeFlat:
 
         level_counts = [len(nodes) for nodes in ft.nodes_by_level]
         total_nodes = sum(level_counts)
-
-        # ------------------------------------------------------------------
-        # Determine top-variance dimensions (global)
-        # ------------------------------------------------------------------
-        all_centroids = np.vstack([node.centroid for level in ft.nodes_by_level for node in level])
-        var = np.var(all_centroids, axis=0)
-        dims_sorted = np.argsort(-var)
-        top_dims = np.ascontiguousarray(dims_sorted[:d_head], dtype=np.int32)
-        ft.top_dims = top_dims
-
-        tail_mask = np.ones(dims, dtype=bool)
-        tail_mask[top_dims] = False
 
         # ------------------------------------------------------------------
         # Allocate leaf structures
@@ -163,13 +116,18 @@ class TreeFlat:
         # ------------------------------------------------------------------
         for level, count in enumerate(level_counts):
             if count == 0:
-                ft.centroids_head.append(np.empty((0, d_head), dtype=np.float32))
+                d_head_level = d_head_by_level[level] if level < len(d_head_by_level) else 0
+                ft.centroids_head.append(np.empty((0, d_head_level), dtype=np.float32))
                 ft.tail_norms.append(np.empty((0,), dtype=np.float32))
                 ft.child_ptr.append(np.empty((0, 0), dtype=np.int32))
                 continue
 
+            # Get dimensional reduction for this level
+            d_head_level = d_head_by_level[level] if level < len(d_head_by_level) else dims
+            top_dims_level = top_dims_by_level[level] if level < len(top_dims_by_level) else np.arange(dims, dtype=np.int32)
+
             # allocate arrays
-            cent_head = np.zeros((count, d_head), dtype=np.float32)
+            cent_head = np.zeros((count, d_head_level), dtype=np.float32)
             tail_norm = np.zeros((count,), dtype=np.float32)
 
             # child pointer matrix (fix width per level)
@@ -189,10 +147,18 @@ class TreeFlat:
         ft.leaf_bounds[0] = 0
 
         for level, nodes in enumerate(ft.nodes_by_level):
+            if not nodes:
+                continue
+                
+            # Get dimensional reduction for this level
+            top_dims_level = top_dims_by_level[level] if level < len(top_dims_by_level) else np.arange(dims, dtype=np.int32)
+            tail_mask = np.ones(dims, dtype=bool)
+            tail_mask[top_dims_level] = False
+            
             for i, node in enumerate(nodes):
                 # centroid head / tail_norm
                 c = node.centroid.astype(np.float32)
-                ft.centroids_head[level][i] = c[top_dims]
+                ft.centroids_head[level][i] = c[top_dims_level]
                 tail = c[tail_mask]
                 ft.tail_norms[level][i] = np.sqrt(np.dot(tail, tail))
 
@@ -226,19 +192,33 @@ class TreeFlat:
     # ------------------------------------------------------------------
     # Search helpers
     # ------------------------------------------------------------------
-    def _prepare_query(self, query: np.ndarray):
-        q_head = query[self.top_dims]  # type: ignore[index]
+    def _prepare_query(self, query: np.ndarray, level: int):
+        """Prepare query for a specific level using level-specific dimensional reduction."""
+        if level >= len(self.top_dims_by_level):
+            # Fallback for levels without specific reduction
+            return query.astype(np.float32, copy=False), 0.0
+            
+        top_dims_level = self.top_dims_by_level[level]
+        q_head = query[top_dims_level]
+        
         tail_mask = np.ones(self.dims, dtype=bool)
-        tail_mask[self.top_dims] = False  # type: ignore[index]
+        tail_mask[top_dims_level] = False
         q_tail = query[tail_mask]
         q_tail_norm = float(np.sqrt(np.dot(q_tail, q_tail)))
+        
         return q_head.astype(np.float32, copy=False), q_tail_norm
 
     # ------------------------------------------------------------------
     # Single-path search
     # ------------------------------------------------------------------
     def search_tree_single(self, query: np.ndarray) -> np.ndarray:
-        q_head, q_tail_norm = self._prepare_query(query)
+        # Pre-compute query preparations for all levels (optimization)
+        q_heads = []
+        q_tail_norms = []
+        for level in range(self.n_levels):
+            q_head, q_tail_norm = self._prepare_query(query, level)
+            q_heads.append(q_head)
+            q_tail_norms.append(q_tail_norm)
 
         node_idx = 0
         level = 0
@@ -249,6 +229,10 @@ class TreeFlat:
             valid = children_ptr[children_ptr >= 0]
             if len(valid) == 0:
                 break
+
+            # Use pre-computed query for this level
+            q_head = q_heads[next_level]
+            q_tail_norm = q_tail_norms[next_level]
 
             head_next = self.centroids_head[next_level][valid]
             tail_next = self.tail_norms[next_level][valid]
@@ -277,7 +261,13 @@ class TreeFlat:
         if beam_width <= 1:
             return self.search_tree_single(query)
 
-        q_head, q_tail_norm = self._prepare_query(query)
+        # Pre-compute query preparations for all levels (optimization)
+        q_heads = []
+        q_tail_norms = []
+        for level in range(self.n_levels):
+            q_head, q_tail_norm = self._prepare_query(query, level)
+            q_heads.append(q_head)
+            q_tail_norms.append(q_tail_norm)
 
         beam = [(0, 0, 1.0)]  # (level, node_idx, score_upper)
         leaves = []
@@ -300,6 +290,10 @@ class TreeFlat:
             valid = children_ptr[children_ptr >= 0]
             if len(valid) == 0:
                 continue
+
+            # Use pre-computed query for this level
+            q_head = q_heads[next_level]
+            q_tail_norm = q_tail_norms[next_level]
 
             head_next = self.centroids_head[next_level][valid]
             tail_next = self.tail_norms[next_level][valid]
@@ -360,13 +354,13 @@ class TreeFlat:
             os.makedirs(base, exist_ok=True)
             meta = {
                 "dims": self.dims,
-                "d_head": self.d_head,
                 "depth": self.depth,
                 "max_depth": self.max_depth,
                 "n_nodes": self.n_nodes,
                 "n_leaves": self.n_leaves,
                 "n_levels": self.n_levels,
-                "top_dims": self.top_dims.tolist(),
+                "top_dims_by_level": [arr.tolist() for arr in self.top_dims_by_level],
+                "d_head_by_level": self.d_head_by_level,
             }
             # Enregistrement des métadonnées
             with open(os.path.join(base, 'meta.json'), 'w') as f:
@@ -384,13 +378,13 @@ class TreeFlat:
         else:
             data = {
                 "dims": self.dims,
-                "d_head": self.d_head,
                 "depth": self.depth,
                 "max_depth": self.max_depth,
                 "n_nodes": self.n_nodes,
                 "n_leaves": self.n_leaves,
                 "n_levels": self.n_levels,
-                "top_dims": self.top_dims,
+                "top_dims_by_level": self.top_dims_by_level,
+                "d_head_by_level": self.d_head_by_level,
                 "centroids_head": self.centroids_head,
                 "tail_norms": self.tail_norms,
                 "child_ptr": self.child_ptr,
@@ -414,13 +408,14 @@ class TreeFlat:
             data = np.load(file_path, allow_pickle=True, mmap_mode=mmap_mode).item()
         else:
             data = np.load(file_path, allow_pickle=True).item()
-        obj = cls(data["dims"], data["max_depth"], data["d_head"])
+        obj = cls(data["dims"], data["max_depth"])
 
         obj.depth = data["depth"]
         obj.n_nodes = data["n_nodes"]
         obj.n_leaves = data["n_leaves"]
         obj.n_levels = data["n_levels"]
-        obj.top_dims = data["top_dims"]
+        obj.top_dims_by_level = data["top_dims_by_level"]
+        obj.d_head_by_level = data["d_head_by_level"]
 
         obj.centroids_head = data["centroids_head"]
         obj.tail_norms = data["tail_norms"]
@@ -443,13 +438,14 @@ class TreeFlat:
         meta_path = os.path.join(base, 'meta.json')
         with open(meta_path, 'r') as f:
             meta = json.load(f)
-        obj = cls(int(meta['dims']), int(meta['max_depth']), int(meta['d_head']))
+        obj = cls(int(meta['dims']), int(meta['max_depth']))
 
         obj.depth = int(meta['depth'])
         obj.n_nodes = int(meta['n_nodes'])
         obj.n_leaves = int(meta['n_leaves'])
         obj.n_levels = int(meta['n_levels'])
-        obj.top_dims = np.array(meta['top_dims'], dtype=np.int32)
+        obj.top_dims_by_level = [np.array(arr, dtype=np.int32) for arr in meta['top_dims_by_level']]
+        obj.d_head_by_level = meta['d_head_by_level']
 
         # Chargement memory-mapping des tableaux numpy
         obj.centroids_head = [
@@ -481,7 +477,7 @@ class TreeFlat:
             "max_depth": self.depth,
             "n_levels": self.n_levels,
             "dims": self.dims,
-            "d_head": self.d_head,
+            "d_head_by_level": self.d_head_by_level,
             "nodes_per_level": [mat.shape[0] for mat in self.centroids_head],
         }
         if self.n_leaves > 0:

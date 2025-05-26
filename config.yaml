@@ -16,19 +16,20 @@ build_tree:
   max_data: 200              # MAX_DATA: Nombre de vecteurs à stocker dans chaque feuille
   max_workers: 12              # Nombre maximum de processus parallèles (default: CPUs)
   use_gpu: true               # Utiliser le GPU pour K-means si disponible
+  perfect_recall: true       # Transformer l'arbre pour garantir un rappel de 100%
 
 
 # Paramètres pour la recherche (test.py)
 search:
-  k: 100                       # Nombre de voisins à rechercher
+  k: 10                       # Nombre de voisins à rechercher
   queries: 100                # Nombre de requêtes aléatoires pour les tests
   mode: "ram"               # Mode de chargement: "ram", "mmap"
   cache_size_mb: 500          # Taille du cache en mégaoctets (pour les modes mmap)
   use_faiss: true             # Utiliser FAISS pour la recherche naïve et le filtrage final
 
   # Configuration de la recherche par faisceau
-  search_type: "beam"          # Type de recherche: "single" (descente simple) ou "beam" (faisceau)
-  beam_width: 4               # Nombre de branches à explorer simultanément (si search_type="beam")
+  search_type: "single"          # Type de recherche: "single" (descente simple) ou "beam" (faisceau)
+  beam_width: 3               # Nombre de branches à explorer simultanément (si search_type="beam")
                                # Plus élevé = meilleur recall mais plus lent
 
 use_flat_tree: true          # Utiliser la structure plate optimisée pour une recherche plus rapide

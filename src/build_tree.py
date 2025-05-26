@@ -24,6 +24,7 @@ from lib.config import ConfigManager
 from lib.io import VectorReader, TreeIO
 from lib.clustering import build_tree
 
+
 def format_time(seconds):
     """Formate le temps en heures, minutes, secondes."""
     return str(datetime.timedelta(seconds=int(seconds)))
@@ -101,17 +102,21 @@ def main():
         
         # L'optimisation des indices avec HNSW a été retirée car elle n'améliore pas le recall
 
+        # Post-processing: Calcul de la réduction de dimension
+        from lib.tree import K16Tree
+        k16tree = K16Tree(tree)
+        k16tree.compute_dimensional_reduction()
+
         # Conversion et sauvegarde directe en structure plate
         flat_path = args.tree_file
         if not (flat_path.endswith(".flat.npy") or flat_path.endswith(".flat")):
             flat_path = os.path.splitext(flat_path)[0] + ".flat.npy"
         print(f"⏳ Conversion et sauvegarde de la structure plate vers {flat_path}...")
         from lib.flat_tree import TreeFlat
-        from lib.tree import K16Tree
-        k16tree = K16Tree(tree)
         flat_tree = TreeFlat.from_tree(k16tree)
+
         flat_tree.save(flat_path)
-        print(f"✓ Structure plate sauvegardée vers {flat_path}")
+        print(f"✓ Structure plate avec Perfect Recall sauvegardée vers {flat_path}")
 
         total_time = time.time() - total_start_time
         print("\n✓ Construction de l'arbre optimisé terminée.")

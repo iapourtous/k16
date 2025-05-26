@@ -137,11 +137,12 @@ log_success "Données préparées"
 log_info "Construction de l'arbre de recherche..."
 echo ""
 echo "Cette étape peut prendre quelques minutes..."
+echo "Le type d'arbre (standard ou perfect recall) est configuré dans config.yaml"
 echo ""
 
 # Vérifier si l'arbre existe déjà
-if [ -f "models/tree.bsp" ]; then
-    log_warning "L'arbre semble déjà être construit."
+if [ -f "models/tree.flat.npy" ] || [ -f "models/tree_perfect_recall.flat.npy" ]; then
+    log_warning "Un arbre semble déjà être construit."
     read -p "Voulez-vous le reconstruire ? (o/N) " -n 1 -r
     echo ""
     if [[ $REPLY =~ ^[Oo]$ ]]; then

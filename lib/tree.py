@@ -109,6 +109,8 @@ class K16Tree:
         self.root = root
         self.stats = {}  # Statistiques sur l'arbre
         self.flat_tree = None  # Version optimisée en structure plate
+        self.top_dims_by_level = None  # Liste des indices de dimensions par niveau pour la réduction locale
+        self.d_head_by_level = None  # Liste du nombre de dimensions conservées par niveau
 
     def set_root(self, root: TreeNode) -> None:
         """
@@ -241,6 +243,81 @@ class K16Tree:
         self.stats = stats
         
         return stats
+    
+    def compute_dimensional_reduction(self) -> List[np.ndarray]:
+        """
+        Calcule la réduction de dimension locale par niveau basée sur la variance des centroïdes.
+        Utilise les paramètres variance_ratio_root et variance_ratio_decay de la configuration.
+        
+        Returns:
+            List[np.ndarray]: Liste des indices de dimensions par niveau
+        """
+        if not self.root:
+            raise ValueError("Arbre vide - impossible de calculer la réduction de dimension")
+        
+        dims = int(self.root.centroid.shape[0])
+        
+        # Retrieve config parameters
+        try:
+            from .config import ConfigManager
+            cm = ConfigManager()
+            variance_ratio_root = cm.get("flat_tree", "variance_ratio_root", 0.80)
+            variance_ratio_decay = cm.get("flat_tree", "variance_ratio_decay", 0.05)
+        except Exception:
+            variance_ratio_root = 0.80
+            variance_ratio_decay = 0.05
+        
+        # Gather nodes per level
+        stats = self.get_statistics()
+        max_depth = stats["max_depth"] + 1
+        nodes_by_level = [[] for _ in range(max_depth)]
+        
+        def _collect(node: TreeNode):
+            lvl = node.level
+            nodes_by_level[lvl].append(node)
+            for child in node.children:
+                _collect(child)
+        
+        _collect(self.root)
+        
+        # Compute local dimensional reduction per level
+        top_dims_by_level = []
+        d_head_by_level = []
+        
+        for level, nodes in enumerate(nodes_by_level):
+            if not nodes:
+                top_dims_by_level.append(np.array([], dtype=np.int32))
+                d_head_by_level.append(0)
+                continue
+            
+            # Calculate variance ratio for this level
+            variance_ratio = variance_ratio_root - level * variance_ratio_decay
+            variance_ratio = max(variance_ratio, 0.1)  # Minimum 10% of dimensions
+            
+            # Calculate number of dimensions to keep
+            d_head_level = max(1, int(dims * variance_ratio))
+            d_head_level = min(d_head_level, dims)  # Cannot exceed total dimensions
+            
+            # Calculate variance for this level's centroids
+            level_centroids = np.vstack([node.centroid for node in nodes])
+            var = np.var(level_centroids, axis=0)
+            dims_sorted = np.argsort(-var)
+            top_dims = np.ascontiguousarray(dims_sorted[:d_head_level], dtype=np.int32)
+            
+            top_dims_by_level.append(top_dims)
+            d_head_by_level.append(d_head_level)
+        
+        # Store in the tree structure
+        self.top_dims_by_level = top_dims_by_level
+        self.d_head_by_level = d_head_by_level
+        
+        print(f"✓ Réduction de dimension locale calculée:")
+        for level, d_head_level in enumerate(d_head_by_level):
+            if d_head_level > 0:
+                ratio = d_head_level / dims
+                print(f"  Niveau {level}: {dims} -> {d_head_level} dimensions (ratio: {ratio:.2f})")
+        
+        return top_dims_by_level
     
     def __str__(self) -> str:
         """Représentation sous forme de chaîne pour le débogage."""
