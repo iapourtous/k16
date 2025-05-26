@@ -1,9 +1,5 @@
 """
 Représentation plate compacte en mémoire d'un arbre K16 (*K16Tree*).
-
-Cette version inclut les correctifs nécessaires pour que
-`TreeFlat.apply_perfect_recall()` garantisse un rappel de 100 % sans erreurs.
-Utilise une réduction de dimension locale par niveau.
 """
 
 from __future__ import annotations

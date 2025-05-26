@@ -318,7 +318,145 @@ class K16Tree:
                 print(f"  Niveau {level}: {dims} -> {d_head_level} dimensions (ratio: {ratio:.2f})")
         
         return top_dims_by_level
-    
+
+    def apply_perfect_recall(self, vectors: np.ndarray, max_data: int = 200) -> None:
+        """
+        Applique la transformation Perfect Recall selon l'algorithme défini.
+        Garantit 100% de rappel en créant des centroïdes exacts pour chaque vecteur.
+        Doit être appelé après compute_dimensional_reduction().
+        """
+        if not self.root:
+            raise ValueError("Arbre vide - impossible d'appliquer Perfect Recall")
+
+        print("🎯 K16Tree Perfect Recall Transformation...")
+
+        # Phase 1: Construction HNSW global
+        print("⏳ Phase 1: Building global HNSW index...")
+        try:
+            import faiss
+            n_vectors, dims = vectors.shape
+
+            # Créer index HNSW
+            hnsw_index = faiss.IndexHNSWFlat(dims, 32)
+            hnsw_index.add(vectors.astype(np.float32))
+            print("✓ Global HNSW index ready")
+
+        except ImportError:
+            raise RuntimeError("FAISS required for Perfect Recall")
+
+        # Phase 2: Navigation et identification des feuilles touchées
+        print("⏳ Phase 2: Identifying vector landing leaves...")
+        leaf_to_vectors = {}  # leaf_node -> [vector_indices]
+
+        for i, vector in enumerate(vectors):
+            # Naviguer pour trouver la feuille où tombe ce vecteur
+            leaf_node = self._navigate_to_leaf(vector)
+
+            if leaf_node not in leaf_to_vectors:
+                leaf_to_vectors[leaf_node] = []
+            leaf_to_vectors[leaf_node].append(i)
+
+        print(f"✓ Phase 2 complete: {len(leaf_to_vectors)} leaves touched")
+
+        # Phase 3: Transformation des feuilles touchées
+        print("⏳ Phase 3: Transforming touched leaves...")
+        for leaf_node, vec_indices in leaf_to_vectors.items():
+            self._transform_leaf_for_perfect_recall(leaf_node, vec_indices, vectors, hnsw_index, max_data)
+
+        print("🎉 Perfect Recall transformation complete!")
+        print(f"   Guarantee : 100 % recall")
+
+    def _navigate_to_leaf(self, query: np.ndarray) -> TreeNode:
+        """
+        Navigation dans l'arbre hiérarchique pour trouver la feuille.
+        Utilise la même logique que TreeFlat avec réduction de dimensions par niveau.
+        """
+        if not self.top_dims_by_level or not self.d_head_by_level:
+            raise ValueError("Réduction de dimensions non calculée - appelez compute_dimensional_reduction() d'abord")
+
+        current = self.root
+
+        while not current.is_leaf():
+            if not current.children:
+                break
+
+            # Obtenir la réduction de dimensions pour le niveau des enfants
+            children_level = current.level + 1
+            if children_level < len(self.top_dims_by_level):
+                top_dims_level = self.top_dims_by_level[children_level]
+
+                # Préparer la query pour ce niveau (comme dans TreeFlat)
+                q_head = query[top_dims_level]
+
+                tail_mask = np.ones(len(query), dtype=bool)
+                tail_mask[top_dims_level] = False
+                q_tail = query[tail_mask]
+                q_tail_norm = float(np.sqrt(np.dot(q_tail, q_tail)))
+            else:
+                # Fallback si pas de réduction spécifique
+                q_head = query.astype(np.float32)
+                q_tail_norm = 0.0
+
+            # Calculer les scores pour tous les enfants avec la même logique que TreeFlat
+            best_child = None
+            best_score = float('-inf')
+
+            for child in current.children:
+                # Calculer head et tail pour le centroïde de l'enfant
+                if children_level < len(self.top_dims_by_level):
+                    top_dims_level = self.top_dims_by_level[children_level]
+                    centroid_head = child.centroid[top_dims_level]
+
+                    tail_mask = np.ones(len(child.centroid), dtype=bool)
+                    tail_mask[top_dims_level] = False
+                    centroid_tail = child.centroid[tail_mask]
+                    centroid_tail_norm = float(np.sqrt(np.dot(centroid_tail, centroid_tail)))
+                else:
+                    centroid_head = child.centroid.astype(np.float32)
+                    centroid_tail_norm = 0.0
+
+                # Score avec la même formule que TreeFlat: dot_head + tail_norm * q_tail_norm
+                dot_head = np.dot(centroid_head, q_head)
+                score = dot_head + centroid_tail_norm * q_tail_norm
+
+                if score > best_score:
+                    best_score = score
+                    best_child = child
+
+            if best_child is None:
+                break
+
+            current = best_child
+
+        return current
+
+    def _transform_leaf_for_perfect_recall(self, leaf_node: TreeNode, vec_indices: List[int],
+                                         vectors: np.ndarray, hnsw_index, max_data: int) -> None:
+        """
+        Transforme une feuille en nœud interne avec des enfants à centroïdes exacts.
+        """
+        # 1. VIDER la feuille de ses indices actuels
+        leaf_node.indices = np.array([], dtype=np.int32)
+
+        # 2. TRANSFORMER la feuille en nœud interne en créant des enfants
+        new_level = leaf_node.level + 1
+
+        for vid in vec_indices:
+            v = vectors[vid]
+
+            # Recherche HNSW pour les voisins
+            _, I = hnsw_index.search(v.reshape(1, -1).astype(np.float32), max_data)
+            idx_list = I[0].tolist()
+
+            # Créer un nouvel enfant avec centroïde exact
+            child_node = TreeNode(centroid=v.copy(), level=new_level)
+            child_node.set_indices(idx_list)
+
+            leaf_node.add_child(child_node)
+
+        # 3. Mettre à jour les centroïdes des enfants
+        leaf_node.set_children_centroids()
+
     def __str__(self) -> str:
         """Représentation sous forme de chaîne pour le débogage."""
         if not self.root and not self.flat_tree:

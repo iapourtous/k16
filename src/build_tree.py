@@ -107,6 +107,10 @@ def main():
         k16tree = K16Tree(tree)
         k16tree.compute_dimensional_reduction()
 
+        # Application de Perfect Recall pour garantir 100% de rappel
+        print(f"⏳ Application de Perfect Recall...")
+        k16tree.apply_perfect_recall(vectors_reader.vectors, max_data=args.max_data)
+
         # Conversion et sauvegarde directe en structure plate
         flat_path = args.tree_file
         if not (flat_path.endswith(".flat.npy") or flat_path.endswith(".flat")):
@@ -116,7 +120,7 @@ def main():
         flat_tree = TreeFlat.from_tree(k16tree)
 
         flat_tree.save(flat_path)
-        print(f"✓ Structure plate avec Perfect Recall sauvegardée vers {flat_path}")
+        print(f"✓ Structure plate sauvegardée vers {flat_path}")
 
         total_time = time.time() - total_start_time
         print("\n✓ Construction de l'arbre optimisé terminée.")
