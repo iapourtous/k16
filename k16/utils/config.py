@@ -7,7 +7,7 @@ import os
 import yaml
 
 # Chemin par défaut du fichier de configuration
-DEFAULT_CONFIG_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config.yaml")
+DEFAULT_CONFIG_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "config.yaml")
 
 # Configuration par défaut
 DEFAULT_CONFIG = {
@@ -17,14 +17,23 @@ DEFAULT_CONFIG = {
     "build_tree": {
         "max_depth": 6,
         "k": 16,
-        "k_adaptive": True,
+        "k_adaptive": False,  # Valeur fixe k=16 par défaut
         "k_min": 2,
         "k_max": 32,
         "max_leaf_size": 100,
-        "max_data": 3000,
+        "max_data": 256,  # Multiple de 16 pour optimisation SIMD
         "max_workers": 8,
         "use_gpu": True,
-        "perfect_recall": False
+        "prune_unused": False,  # Paramètre obsolète
+        # Le pruning des feuilles inutilisées est maintenant automatique et ne peut plus être désactivé
+        "hnsw_batch_size": 1000,
+        "grouping_batch_size": 5000,
+        "hnsw_m": 16,
+        "hnsw_ef_construction": 200,
+    },
+    "flat_tree": {
+        "max_dims": 512,  # Multiple de 16 pour optimisation SIMD
+        "reduction_method": "variance"  # ou "directional"
     },
     "search": {
         "k": 100,
@@ -169,3 +178,17 @@ class ConfigManager:
     def __str__(self):
         """Représentation de la configuration pour le débogage."""
         return f"Configuration chargée depuis: {self.config_path}"
+
+# Fonction utilitaire pour charger une configuration
+def load_config(config_path=None):
+    """
+    Fonction utilitaire pour charger rapidement une configuration.
+    
+    Paramètres :
+        config_path: Chemin vers le fichier de configuration YAML.
+                     Si None, utilise le chemin par défaut.
+    
+    Retourne :
+        ConfigManager: Instance du gestionnaire de configuration.
+    """
+    return ConfigManager(config_path)

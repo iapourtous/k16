@@ -44,6 +44,9 @@ dependencies = [
     "numba>=0.56.0",
     "kneed>=0.8.0",
     "matplotlib>=3.7.0",
+    "fastapi>=0.100.0",
+    "uvicorn>=0.23.0",
+    "pydantic>=2.0.0",
 ]
 
 [project.optional-dependencies]
@@ -63,22 +66,18 @@ dev = [
 ]
 
 [project.scripts]
-k16-prepare = "src.prepareData:main"
-k16-build = "src.build_tree:main"
-k16-test = "src.test:main"
-k16-search = "src.streamlit_search:main"
+k16 = "k16.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/iapourtous/k16"
 Documentation = "https://github.com/iapourtous/k16"
 Repository = "https://github.com/iapourtous/k16.git"
-Issues = ""
 
 [tool.setuptools]
-packages = ["lib", "src"]
+packages = ["k16"]
 
 [tool.setuptools.package-data]
-k16-search = ["config.yaml"]
+k16 = ["*.yaml"]
 
 [tool.black]
 line-length = 120

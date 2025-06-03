@@ -1,11 +1,10 @@
 """
-Module d'entrée/sortie pour K16.
-Gère la lecture et l'écriture des vecteurs et des arbres.
+Module de lecture de vecteurs et d'arbres pour K16.
+Fournit des classes optimisées pour charger des vecteurs et des arbres.
 """
 
 import os
 import struct
-import pickle
 import time
 import numpy as np
 import mmap
@@ -13,40 +12,9 @@ import sys
 from typing import Tuple, List, Dict, Any, Optional, Union
 from collections import OrderedDict
 
-from .tree import TreeNode, K16Tree
-from .config import ConfigManager
-
-class VectorWriter:
-    """Classe pour écrire des vecteurs dans un fichier binaire."""
-    
-    @staticmethod
-    def write_bin(vectors: np.ndarray, file_path: str) -> None:
-        """
-        Écrit des vecteurs dans un fichier binaire.
-        Format: header (n, d: uint64) suivi des données en float32.
-        
-        Args:
-            vectors: Tableau numpy contenant les vecteurs (shape: [n, d])
-            file_path: Chemin du fichier de sortie
-        """
-        n, d = vectors.shape
-        start_time = time.time()
-        print(f"⏳ Écriture de {n:,} vecteurs (dim {d}) vers {file_path}...")
-        
-        # Créer le répertoire si nécessaire
-        os.makedirs(os.path.dirname(os.path.abspath(file_path)), exist_ok=True)
-        
-        # Convertir en float32 si ce n'est pas déjà le cas
-        vectors_float32 = vectors.astype(np.float32)
-        
-        with open(file_path, "wb") as f:
-            # Écrire l'entête: nombre de vecteurs (n) et dimension (d)
-            f.write(struct.pack("<QQ", n, d))
-            # Écrire les données
-            f.write(vectors_float32.tobytes())
-        
-        elapsed = time.time() - start_time
-        print(f"✓ {n:,} vecteurs (dim {d}) écrits dans {file_path} [terminé en {elapsed:.2f}s]")
+from k16.core.tree import K16Tree
+from k16.utils.config import ConfigManager
+from k16.core.flat_tree import TreeFlat
 
 class VectorReader:
     """
@@ -314,44 +282,66 @@ class VectorReader:
     def dot(self, vectors, query):
         """
         Calcule le produit scalaire entre les vecteurs et une requête.
-        Optimisé pour chaque mode avec des techniques d'accélération.
-        
+        Optimisé pour SIMD avec des tailles adaptées (multiples de 16/32/64).
+
         Args:
             vectors: Les vecteurs (indice ou liste d'indices)
             query: Le vecteur requête
-            
+
         Returns:
             Un tableau numpy avec les scores de similarité
         """
+        # S'assurer que la requête est en float32 et contiguë (optimal pour SIMD)
+        query = np.ascontiguousarray(query, dtype=np.float32)
+
         if self.mode == "ram":
-            # En mode RAM, utiliser directement numpy
-            return np.dot(self[vectors], query)
+            # En mode RAM, utiliser un dot product vectorisé pour SIMD
+            vecs = self[vectors]
+            # Assurer contiguïté mémoire pour optimisations SIMD
+            if not vecs.flags.c_contiguous:
+                vecs = np.ascontiguousarray(vecs, dtype=np.float32)
+            return np.dot(vecs, query)
         else:
             # En mode mmap, stratégie optimisée pour différentes tailles
             if isinstance(vectors, (int, np.integer)):
                 # Cas d'un seul vecteur
                 return np.dot(self[vectors], query)
-            elif len(vectors) > 3000:
-                # Pour les grandes listes, traiter par lots de taille optimale
-                batch_size = 3000  # Taille optimale pour balance entre I/O et calcul
-                n_batches = (len(vectors) + batch_size - 1) // batch_size
-                
-                results = np.empty(len(vectors), dtype=np.float32)
-                
-                for i in range(n_batches):
-                    start_idx = i * batch_size
-                    end_idx = min((i + 1) * batch_size, len(vectors))
-                    batch_indices = vectors[start_idx:end_idx]
-                    
-                    # Utiliser l'accès optimisé pour la lecture par blocs
-                    batch_vectors = self[batch_indices]
-                    results[start_idx:end_idx] = np.dot(batch_vectors, query)
-                
-                return results
             else:
-                # Pour les listes de taille modérée, lecture optimisée en un bloc
-                vectors_array = self[vectors]  # Utilise déjà l'optimisation par blocs
-                return np.dot(vectors_array, query)
+                # Adapter la taille des lots pour maximiser SIMD
+                # Choisir une taille de lot qui est multiple de 16
+                # pour l'alignement mémoire optimal avec AVX-512
+                n_vectors = len(vectors)
+
+                if n_vectors <= 256:
+                    # Petits lots: lire en une fois pour éviter l'overhead
+                    vectors_array = self[vectors]
+                    if not vectors_array.flags.c_contiguous:
+                        vectors_array = np.ascontiguousarray(vectors_array, dtype=np.float32)
+                    return np.dot(vectors_array, query)
+                else:
+                    # Pour les grandes listes, traiter par lots optimisés pour SIMD
+                    # 256 est un bon compromis (registres AVX2/AVX-512, cache L1/L2)
+                    batch_size = 256  # Multiple de 16 pour SIMD optimal
+                    n_batches = (n_vectors + batch_size - 1) // batch_size
+
+                    # Préallouer avec alignement mémoire optimal
+                    results = np.empty(n_vectors, dtype=np.float32)
+
+                    for i in range(n_batches):
+                        start_idx = i * batch_size
+                        end_idx = min((i + 1) * batch_size, n_vectors)
+                        batch_indices = vectors[start_idx:end_idx]
+
+                        # Lecture optimisée des vecteurs
+                        batch_vectors = self[batch_indices]
+                        # Assurer contiguïté pour SIMD
+                        if not batch_vectors.flags.c_contiguous:
+                            batch_vectors = np.ascontiguousarray(batch_vectors, dtype=np.float32)
+
+                        # Dot product vectorisé (exploite AVX2/AVX-512)
+                        results[start_idx:end_idx] = np.dot(batch_vectors, query)
+
+                    return results
     
     def close(self) -> None:
         """Libère les ressources, y compris le cache."""
@@ -371,29 +361,64 @@ class VectorReader:
             self.mmap_obj = None
             self.mmap_file = None
 
-class TreeIO:
-    """Classe pour la lecture et l'écriture d'arbres K16."""
-    @staticmethod
-    def load_as_k16tree(file_path: str, mmap_tree: bool = False) -> K16Tree:
-        """
-        Charge la structure plate optimisée de l'arbre depuis le fichier précompilé.
+def read_vectors(file_path: str = None, mode: str = "ram", cache_size_mb: Optional[int] = None, vectors: Optional[np.ndarray] = None) -> VectorReader:
+    """
+    Fonction utilitaire pour lire des vecteurs depuis un fichier ou un tableau numpy.
 
-        Args:
-            file_path: Chemin du fichier binaire de l'arbre ou du fichier plat (.flat.npy)
-            mmap_tree: Si True, charge la structure plate en mode mmap pour économiser la RAM
+    Args:
+        file_path: Chemin vers le fichier binaire contenant les vecteurs (None si vectors est fourni)
+        mode: Mode de lecture - "ram" (défaut) ou "mmap"
+        cache_size_mb: Taille du cache en mégaoctets pour le mode mmap (si None, utilise la valeur de ConfigManager)
+        vectors: Tableau numpy de vecteurs à utiliser directement (None si file_path est fourni)
 
-        Returns:
-            K16Tree: Arbre K16 chargé avec la structure plate
-        """
-        # Déterminer le chemin du fichier plat
-        if file_path.endswith('.flat') or file_path.endswith('.flat.npy'):
-            flat_path = file_path
-        else:
-            flat_path = os.path.splitext(file_path)[0] + '.flat.npy'
+    Returns:
+        VectorReader: Instance de lecteur de vecteurs
+    """
+    if vectors is not None:
+        # Créer un VectorReader avec les vecteurs fournis
+        reader = VectorReader.__new__(VectorReader)
+        reader.file_path = None
+        reader.mode = "ram"
+        reader.n, reader.d = vectors.shape
+        reader.header_size = 16
+        reader.vector_size = reader.d * 4
+        reader.vectors = vectors
+        reader.mmap_file = None
+        reader.mmap_obj = None
+        reader.cache_enabled = False
+        reader.cache = None
+        reader.cache_hits = 0
+        reader.cache_misses = 0
+        reader.max_cache_size = 0
+        reader.cache_capacity = 0
+        return reader
+    elif file_path is not None:
+        return VectorReader(file_path, mode, cache_size_mb)
+    else:
+        raise ValueError("Soit file_path soit vectors doit être fourni")
 
-        print(f"⏳ Chargement de la structure plate optimisée depuis {flat_path}...")
-        start_time = time.time()
-        from .flat_tree import TreeFlat
+def load_tree(file_path: str, mmap_tree: bool = False) -> K16Tree:
+    """
+    Charge la structure plate optimisée de l'arbre depuis le fichier précompilé.
+
+    Args:
+        file_path: Chemin du fichier binaire de l'arbre ou du fichier plat (.flat.npy)
+        mmap_tree: Si True, charge la structure plate en mode mmap pour économiser la RAM
+
+    Returns:
+        K16Tree: Arbre K16 chargé avec la structure plate
+    """
+    # Déterminer le chemin du fichier plat
+    if file_path.endswith('.flat') or file_path.endswith('.flat.npy'):
+        flat_path = file_path
+    else:
+        flat_path = os.path.splitext(file_path)[0] + '.flat.npy'
+
+    print(f"⏳ Chargement de la structure plate optimisée depuis {flat_path}...")
+    start_time = time.time()
+
+    # Essayer de charger l'arbre
+    try:
         if mmap_tree:
             try:
                 flat_tree = TreeFlat.load(flat_path, mmap_mode='r')
@@ -402,8 +427,13 @@ class TreeIO:
                 flat_tree = TreeFlat.load(flat_path)
         else:
             flat_tree = TreeFlat.load(flat_path)
-        tree = K16Tree(None)
-        tree.flat_tree = flat_tree
-        elapsed = time.time() - start_time
-        print(f"✓ Structure plate chargée en {elapsed:.2f}s")
-        return tree
+        print(f"✓ Structure TreeFlat compressée activée")
+    except Exception as e:
+        print(f"⚠️ Erreur lors du chargement de l'arbre: {e}")
+        raise
+
+    tree = K16Tree(None)
+    tree.flat_tree = flat_tree
+    elapsed = time.time() - start_time
+    print(f"✓ Structure plate chargée en {elapsed:.2f}s")
+    return tree

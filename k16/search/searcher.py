@@ -5,11 +5,11 @@ Interface simplifiée pour TreeFlat compressé avec Numba JIT.
 
 import numpy as np
 import time
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Tuple, Optional
 import faiss
 
-from .tree import K16Tree
-from .io import VectorReader
+from k16.core.tree import K16Tree
+from k16.io.reader import VectorReader
 
 class Searcher:
     """
@@ -214,7 +214,12 @@ class Searcher:
         recall_sum = 0
         candidates_count = []
 
-        from tqdm.auto import tqdm
+        try:
+            from tqdm.auto import tqdm
+            use_tqdm = True
+        except ImportError:
+            use_tqdm = False
+            print("Info: tqdm not available, progress will not be shown")
 
         # Warmup Numba JIT
         print("🔥 Warmup Numba JIT compilation...")
@@ -222,7 +227,13 @@ class Searcher:
         for _ in range(3):
             _ = self.flat_tree.search_tree_single(warmup_query)
 
-        for i, query in enumerate(tqdm(queries, desc="Évaluation")):
+        if use_tqdm:
+            queries_iter = tqdm(queries, desc="Évaluation")
+        else:
+            queries_iter = queries
+            print(f"⏳ Traitement de {len(queries)} requêtes...")
+
+        for i, query in enumerate(queries_iter):
             # Recherche TreeFlat
             start_time = time.time()
             tree_candidates = self.search_tree(query)
@@ -245,7 +256,7 @@ class Searcher:
             recall = len(intersection) / k if k > 0 else 0
             recall_sum += recall
 
-            if (i + 1) % 10 == 0 or (i + 1) == len(queries):
+            if not use_tqdm and ((i + 1) % 10 == 0 or (i + 1) == len(queries)):
                 print(f"  → Requête {i+1}/{len(queries)}: Recall = {recall:.4f}, Candidats = {len(tree_candidates)}")
 
         # Calcul des moyennes
@@ -289,3 +300,62 @@ class Searcher:
             "min_candidates": min_candidates,
             "max_candidates": max_candidates
         }
+
+    def search(self, query: np.ndarray, k: int = 10) -> Tuple[List[int], List[float]]:
+        """
+        Effectue une recherche des k plus proches voisins.
+
+        Args:
+            query: Vecteur de requête
+            k: Nombre de voisins à retourner
+
+        Returns:
+            Tuple[List[int], List[float]]: Tuple contenant (indices, scores)
+        """
+        # Normaliser la requête pour des résultats cohérents
+        query_norm = np.linalg.norm(query)
+        if query_norm > 0:
+            query = query / query_norm
+
+        # Trouver les candidats avec l'arbre
+        candidates = self.search_tree(query)
+
+        # Filtrer les candidats pour ne garder que les k plus proches
+        top_indices = self.filter_candidates(candidates, query, k)
+
+        # Calculer les scores de similarité
+        top_vectors = self.vectors_reader[top_indices]
+        scores = [np.dot(query, top_vectors[i]) for i in range(len(top_indices))]
+
+        # Trier par score décroissant
+        sorted_pairs = sorted(zip(top_indices, scores), key=lambda x: x[1], reverse=True)
+        indices = [idx for idx, _ in sorted_pairs]
+        scores = [score for _, score in sorted_pairs]
+
+        return indices, scores
+
+def search(tree: K16Tree, vectors_reader: VectorReader, query: np.ndarray, k: int = 10, 
+           use_faiss: bool = True, search_type: str = "beam", beam_width: int = 3) -> Tuple[List[int], List[float]]:
+    """
+    Fonction utilitaire pour effectuer une recherche avec K16.
+
+    Args:
+        tree: Instance de K16Tree
+        vectors_reader: Lecteur de vecteurs
+        query: Vecteur de requête
+        k: Nombre de voisins à retourner
+        use_faiss: Utiliser FAISS pour accélérer la recherche
+        search_type: Type de recherche - "single" ou "beam"
+        beam_width: Nombre de branches à explorer en recherche par faisceau
+
+    Returns:
+        Tuple[List[int], List[float]]: Tuple contenant (indices, scores)
+    """
+    searcher = Searcher(
+        k16tree=tree,
+        vectors_reader=vectors_reader,
+        use_faiss=use_faiss,
+        search_type=search_type,
+        beam_width=beam_width
+    )
+    return searcher.search(query, k)

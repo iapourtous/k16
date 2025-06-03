@@ -4,7 +4,13 @@ Définit les différentes classes pour représenter l'arbre K16.
 """
 
 import numpy as np
-from typing import List, Any, Optional, Dict, Union
+import time
+from collections import defaultdict
+from typing import List, Any, Optional, Dict, Union, TYPE_CHECKING
+
+# Imports relatifs pour le nouveau package
+if TYPE_CHECKING:
+    from k16.io.reader import VectorReader
 
 class TreeNode:
     """
@@ -12,12 +18,12 @@ class TreeNode:
     Représente un nœud dans l'arbre hiérarchique construit pour la recherche de vecteurs similaires.
     """
     
-    def __init__(self, centroid: np.ndarray, level: int = 0):
+    def __init__(self, centroid: Optional[np.ndarray] = None, level: int = 0):
         """
         Initialise un nœud d'arbre K16.
         
         Args:
-            centroid: Vecteur centroïde représentant ce nœud
+            centroid: Vecteur centroïde représentant ce nœud (optionnel)
             level: Niveau du nœud dans l'arbre (0 = racine)
         """
         self.centroid = centroid  # Centroïde du nœud
@@ -25,6 +31,10 @@ class TreeNode:
         self.children = []        # Pour les nœuds internes: liste des noeuds enfants
         self.centroids = None     # Pour les nœuds internes: tableau numpy des centroïdes des enfants (aligné avec children)
         self.indices = np.array([], dtype=np.int32)  # Pour les feuilles: tableau numpy des MAX_DATA indices les plus proches
+        
+        # NOUVEAU : Réduction dimensionnelle pour les ENFANTS
+        self.children_top_dims = None  # np.ndarray[max_dims] - indices des dimensions importantes pour les enfants
+        self.children_d_head = None    # int - nombre de dimensions conservées pour les enfants
         
     def is_leaf(self) -> bool:
         """
@@ -109,8 +119,6 @@ class K16Tree:
         self.root = root
         self.stats = {}  # Statistiques sur l'arbre
         self.flat_tree = None  # Version optimisée en structure plate
-        self.top_dims_by_level = None  # Liste des indices de dimensions par niveau pour la réduction locale
-        self.d_head_by_level = None  # Liste du nombre de dimensions conservées par niveau
 
     def set_root(self, root: TreeNode) -> None:
         """
@@ -191,7 +199,9 @@ class K16Tree:
             "avg_leaf_size": 0,
             "min_leaf_size": float('inf'),
             "max_leaf_size": 0,
-            "total_indices": 0
+            "total_indices": 0,
+            "nodes_with_reduction": 0,
+            "avg_dimensions_kept": 0
         }
         
         def traverse(node: TreeNode) -> None:
@@ -201,6 +211,10 @@ class K16Tree:
             
             # Mise à jour de la profondeur maximale
             stats["max_depth"] = max(stats["max_depth"], node.level)
+            
+            # Statistiques sur la réduction dimensionnelle
+            if node.children_top_dims is not None and node.children_d_head is not None:
+                stats["nodes_with_reduction"] += 1
             
             if node.is_leaf():
                 # C'est une feuille
@@ -239,85 +253,125 @@ class K16Tree:
             total_branches = sum(k * v for k, v in stats["branching_factors"].items())
             stats["avg_branching_factor"] = total_branches / internal_nodes
         
+        if stats["nodes_with_reduction"] > 0:
+            # Calculer la moyenne des dimensions conservées
+            total_dims = 0
+            nodes_counted = 0
+            
+            def count_dims(node: TreeNode) -> None:
+                nonlocal total_dims, nodes_counted
+                if node.children_d_head is not None:
+                    total_dims += node.children_d_head
+                    nodes_counted += 1
+                for child in node.children:
+                    count_dims(child)
+            
+            count_dims(self.root)
+            if nodes_counted > 0:
+                stats["avg_dimensions_kept"] = total_dims / nodes_counted
+        
         # Conserver les statistiques dans l'instance
         self.stats = stats
         
         return stats
     
-    def compute_dimensional_reduction(self) -> List[np.ndarray]:
+    def compute_dimensional_reduction(self, max_dims: int = None, method: str = "variance") -> None:
         """
-        Calcule la réduction de dimension locale par niveau basée sur la variance des centroïdes.
-        Utilise les paramètres variance_ratio_root et variance_ratio_decay de la configuration.
-        
-        Returns:
-            List[np.ndarray]: Liste des indices de dimensions par niveau
+        Calcule la réduction de dimension locale pour chaque nœud interne.
+        Chaque nœud identifie les dimensions qui séparent le mieux ses enfants.
+
+        Args:
+            max_dims: Nombre de dimensions à conserver. Si None, utilise le paramètre
+                      de configuration max_dims ou une valeur par défaut.
+            method: Méthode de réduction de dimension: "variance", "directional"
         """
         if not self.root:
             raise ValueError("Arbre vide - impossible de calculer la réduction de dimension")
-        
+
         dims = int(self.root.centroid.shape[0])
-        
-        # Retrieve config parameters
-        try:
-            from .config import ConfigManager
-            cm = ConfigManager()
-            variance_ratio_root = cm.get("flat_tree", "variance_ratio_root", 0.80)
-            variance_ratio_decay = cm.get("flat_tree", "variance_ratio_decay", 0.05)
-        except Exception:
-            variance_ratio_root = 0.80
-            variance_ratio_decay = 0.05
-        
-        # Gather nodes per level
-        stats = self.get_statistics()
-        max_depth = stats["max_depth"] + 1
-        nodes_by_level = [[] for _ in range(max_depth)]
-        
-        def _collect(node: TreeNode):
-            lvl = node.level
-            nodes_by_level[lvl].append(node)
+
+        # Retrieve config parameters if max_dims not provided
+        if max_dims is None:
+            try:
+                from k16.utils.config import ConfigManager
+                cm = ConfigManager()
+                max_dims = cm.get("flat_tree", "max_dims", 128)  # Valeur par défaut: 128 dimensions
+            except Exception:
+                max_dims = 128  # Valeur par défaut si la config n'est pas disponible
+
+        # S'assurer que max_dims est valide
+        max_dims = min(max(1, max_dims), dims)  # Entre 1 et dims
+
+        print(f"⏳ Calcul de la réduction de dimension par nœud (max_dims={max_dims}, method={method})...")
+
+        nodes_processed = 0
+        start_time = time.time()
+
+        def compute_node_reduction(node: TreeNode) -> None:
+            nonlocal nodes_processed
+
+            # Ne pas calculer de réduction pour les feuilles
+            if node.is_leaf():
+                return
+
+            # S'assurer que le nœud a des enfants avec centroïdes
+            if not node.children or len(node.children) < 2:
+                # Pas assez d'enfants pour faire une réduction significative
+                # Utiliser toutes les dimensions
+                node.children_top_dims = np.arange(min(max_dims, dims), dtype=np.int32)
+                node.children_d_head = min(max_dims, dims)
+                nodes_processed += 1
+                for child in node.children:
+                    compute_node_reduction(child)
+                return
+
+            # Extraire les centroïdes des enfants
+            child_centroids = np.vstack([child.centroid for child in node.children])
+
+            if method == "directional":
+                # Analyse directionnelle : focus sur les dimensions qui séparent le mieux les clusters
+                # Calculer la séparation de chaque dimension
+                dim_separation = np.zeros(dims)
+
+                # Pour chaque paire de centroïdes, calculer leur séparation
+                n_centroids = child_centroids.shape[0]
+                for i in range(n_centroids):
+                    for j in range(i+1, n_centroids):  # Uniquement les paires uniques
+                        # Calcul de la séparation par dimension
+                        dimension_diff = np.abs(child_centroids[i] - child_centroids[j])
+                        dim_separation += dimension_diff
+
+                # Trier les dimensions par séparation décroissante
+                dims_sorted = np.argsort(-dim_separation)
+                node.children_top_dims = np.ascontiguousarray(dims_sorted[:max_dims], dtype=np.int32)
+                node.children_d_head = max_dims
+
+            else:
+                # Méthode par variance (par défaut)
+                var = np.var(child_centroids, axis=0)
+                dims_sorted = np.argsort(-var)
+                node.children_top_dims = np.ascontiguousarray(dims_sorted[:max_dims], dtype=np.int32)
+                node.children_d_head = max_dims
+
+            nodes_processed += 1
+
+            # Afficher la progression pour les gros arbres
+            if nodes_processed % 1000 == 0:
+                elapsed = time.time() - start_time
+                print(f"  → {nodes_processed} nœuds traités ({elapsed:.1f}s)")
+
+            # Appliquer récursivement aux enfants
             for child in node.children:
-                _collect(child)
-        
-        _collect(self.root)
-        
-        # Compute local dimensional reduction per level
-        top_dims_by_level = []
-        d_head_by_level = []
-        
-        for level, nodes in enumerate(nodes_by_level):
-            if not nodes:
-                top_dims_by_level.append(np.array([], dtype=np.int32))
-                d_head_by_level.append(0)
-                continue
-            
-            # Calculate variance ratio for this level
-            variance_ratio = variance_ratio_root - level * variance_ratio_decay
-            variance_ratio = max(variance_ratio, 0.1)  # Minimum 10% of dimensions
-            
-            # Calculate number of dimensions to keep
-            d_head_level = max(1, int(dims * variance_ratio))
-            d_head_level = min(d_head_level, dims)  # Cannot exceed total dimensions
-            
-            # Calculate variance for this level's centroids
-            level_centroids = np.vstack([node.centroid for node in nodes])
-            var = np.var(level_centroids, axis=0)
-            dims_sorted = np.argsort(-var)
-            top_dims = np.ascontiguousarray(dims_sorted[:d_head_level], dtype=np.int32)
-            
-            top_dims_by_level.append(top_dims)
-            d_head_by_level.append(d_head_level)
-        
-        # Store in the tree structure
-        self.top_dims_by_level = top_dims_by_level
-        self.d_head_by_level = d_head_by_level
-        
-        print(f"✓ Réduction de dimension locale calculée:")
-        for level, d_head_level in enumerate(d_head_by_level):
-            if d_head_level > 0:
-                ratio = d_head_level / dims
-                print(f"  Niveau {level}: {dims} -> {d_head_level} dimensions (ratio: {ratio:.2f})")
-        
-        return top_dims_by_level
+                compute_node_reduction(child)
+
+        # Commencer le calcul depuis la racine
+        compute_node_reduction(self.root)
+
+        elapsed = time.time() - start_time
+        method_name = "Analyse directionnelle" if method == "directional" else ("variance")
+        print(f"✓ Réduction de dimension par nœud calculée ({method_name})")
+        print(f"  → {nodes_processed} nœuds traités en {elapsed:.2f}s")
+        print(f"  → {dims} → {max_dims} dimensions par nœud")
     
     def __str__(self) -> str:
         """Représentation sous forme de chaîne pour le débogage."""
@@ -330,11 +384,13 @@ class K16Tree:
             return (f"K16Tree(nodes={stats['node_count']}, "
                     f"leaves={stats['leaf_count']}, "
                     f"height={stats['max_depth']}, "
+                    f"nodes_with_reduction={stats['nodes_with_reduction']}, "
                     f"optimized=True)")
         else:
             return (f"K16Tree(nodes={stats['node_count']}, "
                     f"leaves={stats['leaf_count']}, "
-                    f"height={stats['max_depth']})")
+                    f"height={stats['max_depth']}, "
+                    f"nodes_with_reduction={stats['nodes_with_reduction']})")
     
     def save_statistics(self, file_path: str) -> None:
         """
@@ -369,4 +425,35 @@ class K16Tree:
             f.write(f"Taille moyenne: {stats['avg_leaf_size']:.2f} indices\n")
             f.write(f"Taille min    : {stats['min_leaf_size']} indices\n")
             f.write(f"Taille max    : {stats['max_leaf_size']} indices\n")
-            f.write(f"Total indices : {stats['total_indices']} indices\n")
+            f.write(f"Total indices : {stats['total_indices']} indices\n\n")
+            
+            f.write("Réduction dimensionnelle\n")
+            f.write("-----------------------\n")
+            f.write(f"Nœuds avec réduction : {stats['nodes_with_reduction']}\n")
+            f.write(f"Dimensions moyennes  : {stats['avg_dimensions_kept']:.1f}\n")
+
+    def improve_with_hnsw(self, vectors_reader, max_data: Optional[int] = None) -> 'K16Tree':
+        """
+        Améliore l'arbre avec HNSW pour optimiser les candidats de chaque feuille.
+        Cette fonction est maintenant une façade qui utilise la version dans TreeFlat.
+        Supprime automatiquement les feuilles non mises à jour (pruning) pour économiser de l'espace.
+
+        Args:
+            vectors_reader: Lecteur de vecteurs
+            max_data: Nombre maximum de candidats par feuille (utilise la config si None)
+
+        Returns:
+            K16Tree: Nouvelle instance d'arbre amélioré
+        """
+        if not self.flat_tree:
+            raise ValueError("L'arbre doit être converti en structure plate avant l'amélioration HNSW")
+
+        # Utiliser la version dans flat_tree
+        print("🔄 Délégation de l'amélioration HNSW à la structure plate...")
+        improved_flat_tree = self.flat_tree.improve_with_hnsw(vectors_reader, max_data)
+
+        # Créer une nouvelle instance d'arbre avec l'arbre plat amélioré
+        improved_tree = K16Tree(self.root)
+        improved_tree.flat_tree = improved_flat_tree
+
+        return improved_tree

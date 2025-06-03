@@ -1,55 +1,78 @@
-# Configuration K16
-# Ce fichier centralise tous les paramètres pour les scripts build_tree.py, search.py et prepareData.py
+# K16 Configuration
+# This file centralizes all parameters for the K16 vector search library
 
-# Paramètres généraux
+# -----------------------------------------------------------------------------
+# General parameters
+# -----------------------------------------------------------------------------
 general:
-  debug: false                # Activer le mode debug pour les logs supplémentaires
+  debug: false                # Enable debug mode for additional logging
 
-# Paramètres pour la construction de l'arbre (build_tree.py)
+# -----------------------------------------------------------------------------
+# Tree construction parameters (build_tree.py)
+# -----------------------------------------------------------------------------
 build_tree:
-  max_depth: 32               # Profondeur maximale de l'arbre
-  k: 100                      # Nombre de branches (clusters) par nœud
-  k_adaptive: true            # Utiliser la méthode du coude pour déterminer k automatiquement
-  k_min: 2                    # Nombre minimum de clusters pour k adaptatif
-  k_max: 32                   # Nombre maximum de clusters pour k adaptatif
-  max_leaf_size: 10            # Taille maximale d'une feuille pour l'arrêt de la subdivision
-  max_data: 200              # MAX_DATA: Nombre de vecteurs à stocker dans chaque feuille
-  max_workers: 12              # Nombre maximum de processus parallèles (default: CPUs)
-  use_gpu: true               # Utiliser le GPU pour K-means si disponible
-  perfect_recall: true       # Transformer l'arbre pour garantir un rappel de 100%
+  # Core tree building parameters
+  max_depth: 32               # Maximum tree depth
+  max_leaf_size: 16            # Maximum leaf size for stopping subdivision
+  max_data: 256               # Number of vectors to store in each leaf
+  max_workers: 12             # Maximum number of parallel processes (default: CPU count)
+  use_gpu: true               # Use GPU for K-means clustering if available
 
+  # HNSW improvement parameters
+  use_hnsw_improvement: true  # Enable candidate improvement with HNSW after construction
+  prune_unused_leaves: true  # Remove leaves that are never used during search
+  hnsw_batch_size: 1000       # Batch size for HNSW searches
+  grouping_batch_size: 5000   # Batch size for vector grouping
+  hnsw_m: 16                  # M parameter for HNSW (connections per node)
+  hnsw_ef_construction: 200   # efConstruction parameter for HNSW (index quality vs. build speed)
 
-# Paramètres pour la recherche (test.py)
+# -----------------------------------------------------------------------------
+# Search parameters (test.py, search.py)
+# -----------------------------------------------------------------------------
 search:
-  k: 10                       # Nombre de voisins à rechercher
-  queries: 100                # Nombre de requêtes aléatoires pour les tests
-  mode: "ram"               # Mode de chargement: "ram", "mmap"
-  cache_size_mb: 500          # Taille du cache en mégaoctets (pour les modes mmap)
-  use_faiss: true             # Utiliser FAISS pour la recherche naïve et le filtrage final
+  k: 10                       # Number of nearest neighbors to retrieve
+  queries: 100                # Number of random queries for benchmark tests
+  mode: "ram"                 # Loading mode: "ram" (full load) or "mmap" (memory-mapped)
+  cache_size_mb: 500          # Cache size in megabytes (for mmap mode)
+  use_faiss: true             # Use FAISS for naive search comparison and final filtering
 
-  # Configuration de la recherche par faisceau
-  search_type: "single"          # Type de recherche: "single" (descente simple) ou "beam" (faisceau)
-  beam_width: 3               # Nombre de branches à explorer simultanément (si search_type="beam")
-                               # Plus élevé = meilleur recall mais plus lent
+  # Search algorithm configuration
+  search_type: "single"         # Search algorithm: "single" (simple descent) or "beam" (beam search)
+  beam_width: 1              # Number of branches to explore simultaneously (beam search only)
+                              # Higher values improve recall at the cost of search speed
 
-use_flat_tree: true          # Utiliser la structure plate optimisée pour une recherche plus rapide
+# -----------------------------------------------------------------------------
+# Tree representation parameters
+# -----------------------------------------------------------------------------
+use_flat_tree: true           # Use the optimized flat structure for faster search
 
 flat_tree:
-  # Paramètres pour d_head adaptatif (automatique selon variance)
-  variance_ratio_root: 0.80   # Ratio de variance à conserver à la racine
-  variance_ratio_decay: 0.05  # Décroissance du ratio par niveau
+  # Dimension reduction parameters
+  max_dims: 512                       # Number of dimensions to keep at each level
+  reduction_method: "directional"     # Dimension selection method: "variance" or "directional"
 
-# Paramètres pour la préparation des données (prepareData.py)
+# -----------------------------------------------------------------------------
+# Data preparation parameters (prepareData.py)
+# -----------------------------------------------------------------------------
 prepare_data:
-  model: "intfloat/multilingual-e5-large"  # Modèle d'embedding à utiliser
-  batch_size: 128                          # Taille des lots pour l'encodage
-  normalize: true                          # Normaliser les embeddings
+  model: "intfloat/multilingual-e5-large"  # Embedding model to use
+  batch_size: 128                          # Batch size for encoding
+  normalize: true                          # Normalize embeddings to unit length
 
-# Paramètres pour les fichiers
+# -----------------------------------------------------------------------------
+# File paths and defaults
+# -----------------------------------------------------------------------------
 files:
-  vectors_dir: "/home/dess4ever/workspace/k16/data"   # Répertoire des vecteurs
-  trees_dir: "/home/dess4ever/workspace/k16/models"   # Répertoire des arbres
-  default_qa: "qa.txt"                                     # Fichier texte par défaut
-  default_vectors: "data.bin"                              # Fichier de vecteurs par défaut
-  default_tree: "tree.bsp"                                 # Fichier d'arbre par défaut
+  vectors_dir: "/home/dess4ever/workspace/k16/data"   # Vectors directory
+  trees_dir: "/home/dess4ever/workspace/k16/models"   # Trees directory
+  default_qa: "qa.txt"                                # Default text file
+  default_vectors: "data.bin"                         # Default vectors file
+  default_tree: "tree.bsp"                            # Default tree file
 
+# -----------------------------------------------------------------------------
+# API configuration
+# -----------------------------------------------------------------------------
+api:
+  host: "127.0.0.1"                      # Host address for API server
+  port: 8000                             # Port for API server
+  reload: false                          # Enable auto-reload for development

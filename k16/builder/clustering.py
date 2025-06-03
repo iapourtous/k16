@@ -1,10 +1,13 @@
 """
 Module de clustering pour K16.
 Implémente les algorithmes de clustering utilisés pour construire l'arbre K16.
+Optimisé pour les instructions SIMD AVX2/AVX-512.
 """
 
 import numpy as np
 import time
+import platform
+import os
 from typing import Tuple, List, Dict, Any, Optional, Union
 import multiprocessing
 from joblib import Parallel, delayed
@@ -19,9 +22,38 @@ except ImportError:
     KNEEDLE_AVAILABLE = False
     print("⚠️ Module kneed n'est pas installé. La méthode du coude utilisera une approche simplifiée.")
 
-from .tree import TreeNode
+from k16.core.tree import TreeNode
+from k16.utils.optimization import configure_simd
 
-def kmeans_faiss(vectors: np.ndarray, k: int, gpu: bool = False, niter: int = 25, remove_empty: bool = True) -> Tuple[np.ndarray, np.ndarray]:
+# Détection des capacités SIMD
+def optimize_for_simd():
+    """Configure l'environnement pour maximiser l'utilisation des instructions SIMD."""
+    # Appliquer les optimisations de base
+    configure_simd()
+    
+    # Détection des capacités SIMD
+    cpu_info = platform.processor().lower()
+    has_avx2 = "avx2" in cpu_info
+    has_avx512 = "avx512" in cpu_info
+
+    # Afficher les informations sur les optimisations SIMD détectées
+    if has_avx512:
+        print("✓ Optimisation pour AVX-512 (512 bits)")
+    elif has_avx2:
+        print("✓ Optimisation pour AVX2 (256 bits)")
+    else:
+        print("✓ Optimisation pour SSE (128 bits)")
+
+    # Vérifier si on a un nombre de clusters optimal pour SIMD
+    if platform.machine() in ('x86_64', 'AMD64', 'x86'):
+        print("✓ Architecture x86_64 détectée - k=16 est optimal pour SIMD")
+
+    return has_avx2, has_avx512
+
+# Appliquer les optimisations SIMD au démarrage
+HAS_AVX2, HAS_AVX512 = optimize_for_simd()
+
+def kmeans_faiss(vectors: np.ndarray, k: int, gpu: bool = False, niter: int = 5, remove_empty: bool = True) -> Tuple[np.ndarray, np.ndarray]:
     """
     K-means sphérique optimisé pour les embeddings normalisés.
     Utilise la similarité cosinus (produit scalaire) au lieu de la distance euclidienne.
@@ -50,99 +82,70 @@ def kmeans_faiss(vectors: np.ndarray, k: int, gpu: bool = False, niter: int = 25
     n = vectors.shape[0]
 
     # Ne pas créer plus de clusters que de points
-    requested_k = k  # Conserver la valeur initiale
     if k > n:
         k = n
-        # Initialisation K-means++ pour une meilleure convergence
-        centroids = spherical_kmeans_plusplus(vectors, k)
 
-        # Créer un index pour la similarité cosinus (produit scalaire)
-        gpu_available = gpu and hasattr(faiss, "get_num_gpus") and faiss.get_num_gpus() > 0
-        if gpu_available:
-            res = faiss.StandardGpuResources()
-            index = faiss.GpuIndexFlatIP(res, d)  # IP = Inner Product
-        else:
-            index = faiss.IndexFlatIP(d)  # Pour vecteurs normalisés = cosinus
+    # Utiliser l'implémentation K-means optimisée de FAISS
+    try:
+        # Créer l'objet K-means FAISS
+        kmeans = faiss.Kmeans(d, k, niter=niter, verbose=False, spherical=True, gpu=gpu)
 
-        # Algorithme K-means sphérique
-        labels = np.zeros(n, dtype=np.int32)
-        prev_inertia = float('inf')
+        # Entraîner le modèle
+        kmeans.train(vectors)
 
-        for i in range(niter):
-            # Ajouter les centroïdes à l'index
-            index.reset()
-            index.add(centroids)
+        # Obtenir les centroïdes
+        centroids = kmeans.centroids.copy()
 
-            # Assigner chaque point au centroïde le plus proche (similarité maximale)
-            similarities, idx = index.search(vectors, 1)
-            labels = idx.reshape(-1)
+        # Assigner les points aux clusters
+        index = faiss.IndexFlatIP(d)
+        if gpu:
+            try:
+                res = faiss.StandardGpuResources()
+                index = faiss.GpuIndexFlatIP(res, d)
+            except:
+                pass  # Fallback au CPU
 
-            # Recalculer les centroïdes
-            new_centroids = np.zeros((k, d), dtype=np.float32)
-            counts = np.zeros(k, dtype=np.int32)
+        index.add(centroids)
+        _, labels = index.search(vectors, 1)
+        labels = labels.reshape(-1)
 
-            for j, label in enumerate(labels):
-                new_centroids[label] += vectors[j]
-                counts[label] += 1
+        # Gérer les clusters vides si demandé
+        if remove_empty:
+            cluster_sizes = np.bincount(labels, minlength=k)
+            empty_clusters = np.where(cluster_sizes == 0)[0]
 
-            # Gérer les clusters vides
-            empty_clusters = np.where(counts == 0)[0]
-
-            # Si on supprime les clusters vides et qu'on en a détecté
-            if remove_empty and len(empty_clusters) > 0 and i == niter-1:  # Seulement à la dernière itération
+            if len(empty_clusters) > 0 and len(empty_clusters) < k - 1:
                 print(f"  ⚠️ Suppression de {len(empty_clusters)} clusters vides...")
 
                 # Garder seulement les centroïdes des clusters non vides
-                valid_indices = np.where(counts > 0)[0]
+                valid_indices = np.where(cluster_sizes > 0)[0]
                 new_k = len(valid_indices)
 
-                # Vérifier qu'il reste au moins 2 clusters (minimum requis)
                 if new_k >= 2:
-                    # Réduire les centroïdes et ajuster k
-                    final_centroids = np.zeros((new_k, d), dtype=np.float32)
-                    for idx, valid_idx in enumerate(valid_indices):
-                        final_centroids[idx] = new_centroids[valid_idx] / np.linalg.norm(new_centroids[valid_idx])
+                    # Filtrer les centroïdes
+                    final_centroids = centroids[valid_indices]
 
                     # Ré-étiqueter les points
                     index.reset()
                     index.add(final_centroids)
-                    similarities, idx = index.search(vectors, 1)
-                    final_labels = idx.reshape(-1)
+                    _, final_labels = index.search(vectors, 1)
+                    final_labels = final_labels.reshape(-1)
 
                     print(f"  ✓ K réduit de {k} à {new_k} pour éviter les clusters vides")
                     return final_centroids, final_labels
-                else:
-                    print(f"  ⚠️ Trop de clusters vides ({len(empty_clusters)}/{k}), conservation de l'original")
 
-            # Normaliser les centroïdes des clusters non vides
-            for cluster_idx in range(k):
-                if counts[cluster_idx] == 0:
-                    # Cluster vide : assigner un point aléatoire (nécessaire pour la stabilité)
-                    random_idx = np.random.randint(0, n)
-                    new_centroids[cluster_idx] = vectors[random_idx]
-                else:
-                    # Normaliser le centroïde (projection sur la sphère unitaire)
-                    centroid = new_centroids[cluster_idx]
-                    new_centroids[cluster_idx] = centroid / np.linalg.norm(centroid)
+        return centroids, labels
 
-            # Calculer l'inertie pour vérifier la convergence
-            inertia = -similarities.sum()  # Négatif car on maximise la similarité
-
-            # Vérifier la convergence
-            if abs(prev_inertia - inertia) < 1e-4 * abs(prev_inertia):
-                break
-
-            prev_inertia = inertia
-            centroids = new_centroids
-    else:
-        # Version fallback sans FAISS
+    except Exception as e:
+        # Fallback vers sklearn si FAISS échoue
+        print(f"⚠️ FAISS K-means failed ({e}), using sklearn fallback")
         from sklearn.cluster import KMeans
         from sklearn.preprocessing import normalize
 
         # Normaliser les vecteurs
         vectors_norm = normalize(vectors, norm='l2')
 
-        # K-means avec similarité cosinus
+        # K-means avec sklearn
         kmeans = KMeans(n_clusters=k, max_iter=niter, n_init=1, random_state=42)
         labels = kmeans.fit_predict(vectors_norm)
 
@@ -268,7 +271,7 @@ def find_optimal_k(vectors: np.ndarray, k_min: int = 2, k_max: int = 32, gpu: bo
 
     # Calculer l'inertie pour différentes valeurs de k
     for k in tqdm(k_range, desc="Recherche du k optimal"):
-        centroids, labels = kmeans_faiss(vectors, k, gpu=gpu, niter=15)  # Moins d'itérations pour la recherche
+        centroids, labels = kmeans_faiss(vectors, k, gpu=gpu, niter=5)  # Moins d'itérations pour la recherche
 
         # Calculer l'inertie adaptée au clustering sphérique
         inertia = 0
@@ -346,10 +349,10 @@ def select_closest_vectors(vectors: np.ndarray, all_indices: List[int], centroid
 
 def select_closest_natural_vectors(leaf_vectors: np.ndarray, leaf_indices: Union[List[int], np.ndarray],
                                   global_vectors: np.ndarray, global_indices: Union[List[int], np.ndarray],
-                                  centroid: np.ndarray, max_data: int) -> np.ndarray:
+                                  centroid: np.ndarray, max_data: int, sibling_indices: Optional[List[np.ndarray]] = None) -> np.ndarray:
     """
     Sélectionne d'abord les vecteurs qui tombent naturellement dans la feuille,
-    puis complète avec les plus proches au global si nécessaire.
+    puis complète avec les frères/sœurs, et enfin avec les plus proches au global si nécessaire.
 
     Args:
         leaf_vectors: Vecteurs qui tombent naturellement dans cette feuille
@@ -358,6 +361,7 @@ def select_closest_natural_vectors(leaf_vectors: np.ndarray, leaf_indices: Union
         global_indices: Tous les indices disponibles
         centroid: Centroïde de référence
         max_data: Nombre maximum de vecteurs à sélectionner
+        sibling_indices: Liste des indices des frères/sœurs (autres clusters du même niveau)
 
     Returns:
         np.ndarray: Tableau des indices des max_data vecteurs les plus proches du centroïde
@@ -381,33 +385,60 @@ def select_closest_natural_vectors(leaf_vectors: np.ndarray, leaf_indices: Union
         selected_count = min(max_data, len(sorted_local_indices))
         return leaf_indices[sorted_local_indices[:selected_count]]
 
-    # Sinon, compléter avec les plus proches au global
+    # Sinon, compléter avec les frères/sœurs d'abord, puis au global
     result = leaf_indices.tolist()  # Commencer avec les vecteurs naturels
+    used_indices = set(leaf_indices.tolist())  # Maintenir un set de tous les indices utilisés
 
+    # Étape 1: Ajouter des vecteurs des frères/sœurs si disponibles
+    if sibling_indices is not None:
+        sibling_candidates = []
+        for sibling_idx_array in sibling_indices:
+            if len(sibling_idx_array) > 0:
+                sibling_candidates.extend(sibling_idx_array.tolist())
+
+        if sibling_candidates:
+            # Calculer la similarité des vecteurs frères/sœurs avec le centroïde
+            sibling_candidates = np.array(sibling_candidates, dtype=np.int32)
+            sibling_vectors = global_vectors[sibling_candidates]
+            sibling_similarities = np.dot(sibling_vectors, centroid)
+            sibling_sorted_indices = np.argsort(-sibling_similarities)
+
+            # Ajouter les meilleurs frères/sœurs qui ne sont pas déjà utilisés
+            for idx in sibling_sorted_indices:
+                global_idx = sibling_candidates[idx]
+                if global_idx not in used_indices:
+                    result.append(global_idx)
+                    used_indices.add(global_idx)  # Mettre à jour le set d'exclusion
+                    if len(result) >= max_data:
+                        return np.array(result, dtype=np.int32)
+
+    # Étape 2: Si encore pas assez, compléter avec les plus proches au global
     # Calculer la similarité entre tous les vecteurs et le centroïde
     similarities = np.dot(global_vectors, centroid)
 
     # Trier les indices par similarité décroissante
     sorted_indices = np.argsort(-similarities)
 
-    # Ajouter les vecteurs les plus proches qui ne sont pas déjà dans la feuille
+    # Ajouter les vecteurs les plus proches qui ne sont pas déjà utilisés
     for i in sorted_indices:
         global_idx = global_indices[i]
-        if global_idx not in leaf_indices_set:
+        if global_idx not in used_indices:
             result.append(global_idx)
+            used_indices.add(global_idx)  # Mettre à jour le set d'exclusion
             if len(result) >= max_data:
                 break
 
     return np.array(result, dtype=np.int32)
 
-def build_tree_node(vectors: np.ndarray, global_vectors: np.ndarray, global_indices: Union[List[int], np.ndarray],
+def build_tree_node(vectors: np.ndarray, current_indices: Union[List[int], np.ndarray], global_vectors: np.ndarray, global_indices: Union[List[int], np.ndarray],
                    level: int, max_depth: int, k_adaptive: bool, k: int, k_min: int, k_max: int,
-                   max_leaf_size: int, max_data: int, use_gpu: bool = False) -> TreeNode:
+                   max_leaf_size: int, max_data: int, use_gpu: bool = False, sibling_indices: Optional[List[np.ndarray]] = None) -> TreeNode:
     """
     Construit un nœud de l'arbre optimisé.
 
     Args:
         vectors: Les vecteurs assignés à ce nœud
+        current_indices: Les indices des vecteurs assignés à ce nœud
         global_vectors: Tous les vecteurs de la collection complète
         global_indices: Tous les indices de la collection complète
         level: Niveau actuel dans l'arbre
@@ -425,17 +456,17 @@ def build_tree_node(vectors: np.ndarray, global_vectors: np.ndarray, global_indi
     # Conversion en arrays numpy si nécessaire
     if isinstance(global_indices, list):
         global_indices = np.array(global_indices, dtype=np.int32)
-        
+    if isinstance(current_indices, list):
+        current_indices = np.array(current_indices, dtype=np.int32)
+
     # Vérifier si nous avons assez de vecteurs pour continuer
     if len(vectors) == 0:
         # Créer un nœud vide avec un centroïde aléatoire normalisé
         random_vector = np.random.randn(global_vectors.shape[1])
         random_centroid = random_vector / np.linalg.norm(random_vector)
-        empty_node = TreeNode(random_centroid, level)
+        empty_node = TreeNode(level=level)
+        empty_node.centroid = random_centroid
         return empty_node
-
-    # Récupérer les indices actuels des vecteurs dans ce nœud
-    local_indices = np.arange(len(vectors), dtype=np.int32)
 
     # Calculer le centroïde de ce nœud (normalisé pour le produit scalaire)
     centroid = np.mean(vectors, axis=0)
@@ -450,14 +481,15 @@ def build_tree_node(vectors: np.ndarray, global_vectors: np.ndarray, global_indi
 
     # Créer une feuille si les conditions sont remplies
     if level >= max_depth or len(vectors) <= max_leaf_size:
-        leaf = TreeNode(centroid, level)
+        leaf = TreeNode(level=level)
+        leaf.centroid = centroid
 
         # Sélectionner les max_data vecteurs les plus proches du centroïde
-        # Priorité aux vecteurs qui tombent naturellement dans cette feuille, puis complément
+        # Priorité aux vecteurs qui tombent naturellement dans cette feuille, puis frères/sœurs, puis global
         leaf.set_indices(select_closest_natural_vectors(
-            vectors, global_indices[local_indices],
+            vectors, current_indices,
             global_vectors, global_indices,
-            centroid, max_data
+            centroid, max_data, sibling_indices
         ))
 
         return leaf
@@ -492,7 +524,8 @@ def build_tree_node(vectors: np.ndarray, global_vectors: np.ndarray, global_indi
             centroids[i] = centroids[i] / norm
 
     # Créer le noeud actuel avec son centroïde
-    node = TreeNode(centroid, level)
+    node = TreeNode(level=level)
+    node.centroid = centroid
 
     # Créer des groupes pour chaque cluster en utilisant numpy
     cluster_indices = [[] for _ in range(used_k)]
@@ -501,7 +534,7 @@ def build_tree_node(vectors: np.ndarray, global_vectors: np.ndarray, global_indi
     # Assigner chaque vecteur à son cluster
     for i, cluster_idx in enumerate(labels):
         cluster_vectors[cluster_idx].append(vectors[i])
-        cluster_indices[cluster_idx].append(local_indices[i])
+        cluster_indices[cluster_idx].append(current_indices[i])
     
     # Convertir les listes en tableaux numpy
     cluster_vectors_np = [np.array(vec_list) if vec_list else np.array([]) for vec_list in cluster_vectors]
@@ -510,9 +543,13 @@ def build_tree_node(vectors: np.ndarray, global_vectors: np.ndarray, global_indi
     # Construire les enfants pour chaque cluster (récursivement)
     for i in range(used_k):
         if len(cluster_vectors_np[i]) > 0:
+            # Préparer les indices des frères/sœurs (tous les autres clusters du même niveau)
+            sibling_indices_list = [cluster_indices_np[j] for j in range(used_k) if j != i and len(cluster_indices_np[j]) > 0]
+
             # Pour les nœuds internes, passer les vecteurs et indices actuels
             child = build_tree_node(
                 cluster_vectors_np[i],
+                cluster_indices_np[i],
                 global_vectors,
                 global_indices,
                 level + 1,
@@ -523,13 +560,15 @@ def build_tree_node(vectors: np.ndarray, global_vectors: np.ndarray, global_indi
                 k_max,
                 max_leaf_size,
                 max_data,
-                use_gpu
+                use_gpu,
+                sibling_indices_list
             )
             node.add_child(child)
         else:
             # Si un cluster est vide, créer une feuille basée sur le centroïde
             empty_centroid = centroids[i]
-            empty_node = TreeNode(empty_centroid, level + 1)
+            empty_node = TreeNode(level=level + 1)
+            empty_node.centroid = empty_centroid
 
             # Sélectionner les vecteurs globaux les plus proches de ce centroïde vide
             similarities = np.dot(global_vectors, empty_centroid)
@@ -577,6 +616,7 @@ def process_cluster(i: int, vectors: np.ndarray, cluster_indices: np.ndarray, cl
     if len(cluster_vectors) > 0:
         return i, build_tree_node(
             cluster_vectors,
+            cluster_indices,
             global_vectors,
             global_indices,
             level,
@@ -600,7 +640,8 @@ def process_cluster(i: int, vectors: np.ndarray, cluster_indices: np.ndarray, cl
         sorted_indices = np.argsort(-similarities)
 
         # Créer une feuille avec le centroïde normalisé
-        leaf = TreeNode(centroid, level)
+        leaf = TreeNode(level=level)
+        leaf.centroid = centroid
 
         # Sélectionner jusqu'à max_data indices les plus proches
         selected_count = min(max_data, len(sorted_indices))
@@ -634,10 +675,17 @@ def build_tree(vectors: np.ndarray, max_depth: int = 6, k: int = 16, k_adaptive:
         max_workers = multiprocessing.cpu_count()
 
     # Vérifier si le GPU est vraiment disponible
-    gpu_available = use_gpu and hasattr(faiss, "get_num_gpus") and faiss.get_num_gpus() > 0
-    if use_gpu and not gpu_available:
-        print("⚠️ GPU demandé mais non disponible. Utilisation du CPU à la place.")
-        use_gpu = False
+    gpu_available = False
+    if use_gpu:
+        try:
+            res = faiss.StandardGpuResources()
+            # Test simple de création d'un index GPU
+            test_index = faiss.GpuIndexFlatIP(res, 128)
+            gpu_available = True
+            print("✓ GPU FAISS détecté et disponible")
+        except (AttributeError, RuntimeError) as e:
+            print(f"⚠️ GPU demandé mais non disponible: {e}. Utilisation du CPU à la place.")
+            use_gpu = False
 
     gpu_str = "GPU" if use_gpu else "CPU"
     print(f"⏳ Construction de l'arbre optimisé avec FAISS sur {gpu_str} (max {max_depth} niveaux) avec {'k adaptatif' if k_adaptive else f'k={k}'},")
@@ -652,17 +700,33 @@ def build_tree(vectors: np.ndarray, max_depth: int = 6, k: int = 16, k_adaptive:
     # Initialiser les indices globaux comme un tableau numpy
     global_indices = np.arange(len(vectors), dtype=np.int32)
 
-    # Déterminer le nombre de clusters pour le premier niveau
+    # Utiliser k=16 par défaut avec ajustement intelligent
+    # pour les petits datasets ou les niveaux profonds
+    vectors_count = len(vectors)
+    min_points_per_cluster = max(1, max_leaf_size // 2)
+
+    # Détermine le nombre optimal de clusters (k)
     if k_adaptive:
-        if len(vectors) > 10000:
+        # Mode adaptatif traditionnel (coude)
+        if vectors_count > 10000:
             sample_size = 10000
-            sample_indices = np.random.choice(len(vectors), sample_size, replace=False)
+            sample_indices = np.random.choice(vectors_count, sample_size, replace=False)
             sample_vectors = vectors[sample_indices]
             root_k = find_optimal_k(sample_vectors, k_min, k_max, gpu=use_gpu)
         else:
             root_k = find_optimal_k(vectors, k_min, k_max, gpu=use_gpu)
     else:
-        root_k = k
+        # Ajustement automatique - k est réduit si le nombre de points est trop petit
+        # k=16 est optimal pour SIMD, mais pas si on a trop peu de points
+        if vectors_count < k * min_points_per_cluster:
+            # Calculer un k qui garantit au moins min_points_per_cluster points par cluster
+            adjusted_k = max(2, min(k, vectors_count // min_points_per_cluster))
+            if adjusted_k != k:
+                print(f"  → Ajustement automatique: k={k} → k={adjusted_k} (car {vectors_count} points < {k}×{min_points_per_cluster})")
+            root_k = adjusted_k
+        else:
+            # Utiliser k=16 standard (optimal pour SIMD)
+            root_k = k
 
     # Appliquer K-means pour le premier niveau avec FAISS
     print(f"  → Niveau 1: Clustering K-means avec k={root_k} sur {len(vectors):,} vecteurs...")
@@ -674,7 +738,8 @@ def build_tree(vectors: np.ndarray, max_depth: int = 6, k: int = 16, k_adaptive:
     # Créer le noeud racine (avec centroïde normalisé)
     root_centroid = np.mean(centroids, axis=0)
     root_centroid = root_centroid / np.linalg.norm(root_centroid)
-    root = TreeNode(root_centroid, 0)
+    root = TreeNode(level=0)
+    root.centroid = root_centroid
 
     # Créer des groupes pour chaque cluster en utilisant numpy
     # Utiliser une liste de tableaux pour améliorer l'efficacité
@@ -727,7 +792,8 @@ def build_tree(vectors: np.ndarray, max_depth: int = 6, k: int = 16, k_adaptive:
         else:
             # Ce cas ne devrait pas arriver avec le nouveau process_cluster
             # mais gardons-le par précaution
-            empty_node = TreeNode(centroids[i], 1)
+            empty_node = TreeNode(level=1)
+            empty_node.centroid = centroids[i]
             root.add_child(empty_node)
     
     # S'assurer que root.centroids est bien initialisé
